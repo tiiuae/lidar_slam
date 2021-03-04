@@ -33,9 +33,10 @@ find_package(Eigen3 3.1.0 REQUIRED)
 find_package(OpenMP REQUIRED)
 
 include_directories(${PCL_INCLUDE_DIRS})
+include_directories(include)
 add_definitions(${PCL_DEFINITIONS})
 
-add_executable(lidar_slam_node src/lidar_slam_node.cpp)
+add_executable(lidar_slam_node src/lidar_slam_node.cpp src/lidar_slam.cpp)
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros pcl_conversions)
 target_link_libraries(lidar_slam_node g2o::core ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 
