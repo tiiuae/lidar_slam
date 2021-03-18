@@ -1,6 +1,6 @@
 
-#include <lidar_slam/lidar_slam.h>
 #include <gtest/gtest.h>
+#include <lidar_slam/lidar_slam.h>
 
 using namespace lidar_slam;
 
@@ -9,7 +9,6 @@ class LidarSlamTest : public ::testing::Test
   public:
     LidarSlamTest() = default;
 };
-
 
 TEST_F(LidarSlamTest, BasicTest)
 {

@@ -2,18 +2,18 @@ cmake_minimum_required(VERSION 3.5)
 project(lidar_slam)
 
 # Default to C99
-if(NOT CMAKE_C_STANDARD)
-  set(CMAKE_C_STANDARD 99)
-endif()
+if (NOT CMAKE_C_STANDARD)
+    set(CMAKE_C_STANDARD 99)
+endif ()
 
 # Default to C++14
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
-endif()
+if (NOT CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 14)
+endif ()
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic)
+endif ()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native -pthread")
@@ -37,29 +37,32 @@ include_directories(${PCL_INCLUDE_DIRS})
 include_directories(include)
 add_definitions(${PCL_DEFINITIONS})
 
+
 add_executable(lidar_slam_node src/lidar_slam_node.cpp src/lidar_slam.cpp)
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
-target_link_libraries(lidar_slam_node g2o::core ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
+target_link_libraries(lidar_slam_node g2o::core g2o::types_icp g2o::types_sba g2o::solver_cholmod ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
+
+#types_slam2d types_slam3d solver_cholmod parser_library interface_library
 
 
-if(BUILD_TESTING)
-  enable_testing()
+if (BUILD_TESTING)
+    enable_testing()
 
-  find_package(ament_lint_auto REQUIRED)
-  find_package(GTest CONFIG REQUIRED)
+    find_package(ament_lint_auto REQUIRED)
+    find_package(GTest CONFIG REQUIRED)
 
-  add_executable(lidar_slam_test test/lidar_slam_test.cpp )
-  ament_target_dependencies(lidar_slam_test rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
-  target_link_libraries(lidar_slam_test gtest gtest_main pthread g2o::core ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
-  add_test(NAME lidar_slam_test COMMAND lidar_slam_test)
+    add_executable(lidar_slam_test test/lidar_slam_test.cpp)
+    ament_target_dependencies(lidar_slam_test rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
+    target_link_libraries(lidar_slam_test gtest gtest_main pthread g2o::core ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
+    add_test(NAME lidar_slam_test COMMAND lidar_slam_test)
 
-  # the following line skips the linter which checks for copyrights
-  # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # uncomment the line when this package is not in a git repo
-  #set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
-endif()
+    # the following line skips the linter which checks for copyrights
+    # uncomment the line when a copyright and license is not present in all source files
+    #set(ament_cmake_copyright_FOUND TRUE)
+    # the following line skips cpplint (only works in a git repo)
+    # uncomment the line when this package is not in a git repo
+    #set(ament_cmake_cpplint_FOUND TRUE)
+    ament_lint_auto_find_test_dependencies()
+endif ()
 
 ament_package()
