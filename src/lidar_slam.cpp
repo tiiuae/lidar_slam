@@ -40,10 +40,10 @@ LidarSlam::LidarSlam()
 
     optimizer_.setVerbose(true);
 
-    linearSolver_ = g2o::make_unique<g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType>>();
+    auto linearSolver = g2o::make_unique<g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType>>();
 
     solver_ = std::make_unique<g2o::OptimizationAlgorithmLevenberg>(
-        g2o::make_unique<g2o::BlockSolver_6_3>(std::move(linearSolver_)));
+        g2o::make_unique<g2o::BlockSolver_6_3>(std::move(linearSolver)));
 
     optimizer_.setAlgorithm(solver_.get());
 
@@ -58,11 +58,14 @@ LidarSlam::LidarSlam()
     information_ = Eigen::Matrix<double, 6, 6>::Zero();
     information_.block<3, 3>(0, 0) = transNoise.inverse();
     information_.block<3, 3>(3, 3) = rotNoise.inverse();
+
+    accumulated_odometry_transform_ = Eigen::Matrix4d::Identity();
 }
 
 boost::optional<Eigen::Matrix4d> LidarSlam::TryAlignment(const PointCloudPtr source,
                                                          const PointCloudPtr target,
-                                                         const float max_misalignment)
+                                                         const float max_shift_misalignment,
+                                                         const float max_angle_misalignment)
 {
     boost::optional<Eigen::Matrix4d> result;
 
@@ -81,9 +84,6 @@ boost::optional<Eigen::Matrix4d> LidarSlam::TryAlignment(const PointCloudPtr sou
         gicp2_.align(tmp_cloud2);
     });
 
-    t1.detach();
-    t2.detach();
-
     t1.join();
     t2.join();
 
@@ -91,14 +91,11 @@ boost::optional<Eigen::Matrix4d> LidarSlam::TryAlignment(const PointCloudPtr sou
     {
         Eigen::Matrix4f result1 = gicp1_.getFinalTransformation();
         Eigen::Matrix4f result2 = gicp2_.getFinalTransformation();
-        const Eigen::Matrix4f diff = result1 * result2.inverse();
-        const float dx = diff(0, 3);
-        const float dy = diff(1, 3);
-        const float dz = diff(2, 3);
-        const float misalignment_shift = std::sqrt(dx * dx + dy * dy + dz * dz);
-        // const Eigen::Quaternionf misalignment_angle(Eigen::Matrix3f(diff.block(0, 0, 3, 3)));
+        const Eigen::Matrix4f diff = result1 * result2;
 
-        if (misalignment_shift < max_misalignment)
+        const auto misalignment = GetAbsoluteShiftAngle(diff.cast<double>());
+
+        if (misalignment.first < max_shift_misalignment && misalignment.second < max_angle_misalignment)
         {
             // return valid value only if left-to-right misalignment is not too big
             result = result1.cast<double>();
@@ -106,6 +103,20 @@ boost::optional<Eigen::Matrix4d> LidarSlam::TryAlignment(const PointCloudPtr sou
     }
 
     return result;
+}
+
+std::pair<double, double> LidarSlam::GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix)
+{
+    const double dx = matrix(0, 3);
+    const double dy = matrix(1, 3);
+    const double dz = matrix(2, 3);
+    const double translation = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+    const Eigen::Quaterniond angle(Eigen::Matrix3d(matrix.block(0, 0, 3, 3)));
+    const double rotation =
+        std::sqrt(angle.x() * angle.x() + angle.y() * angle.y() + angle.z() * angle.z()) * angle.w();
+
+    return std::make_pair(translation, rotation);
 }
 
 void LidarSlam::LocalThreadRun()
@@ -132,10 +143,6 @@ void LidarSlam::LocalThreadRun()
         if (!previous_cloud_ || previous_cloud_->empty())
         {
             previous_cloud_ = latest_cloud_local;
-            accumulated_odometry_transform_.row(0) << 1.0, 0.0, 0.0, 0.0;
-            accumulated_odometry_transform_.row(1) << 0.0, 1.0, 0.0, 0.0;
-            accumulated_odometry_transform_.row(2) << 0.0, 0.0, 1.0, 0.0;
-            accumulated_odometry_transform_.row(3) << 0.0, 0.0, 0.0, 1.0;
 
             if (odometry_callback_)
             {
@@ -145,53 +152,70 @@ void LidarSlam::LocalThreadRun()
             continue;
         }
 
-        std::thread try_find_loop;
-        int try_id{};
-        std::shared_ptr<g2o::VertexSE3> try_vertex;
-        boost::optional<Eigen::Matrix4d> try_result;
+                std::thread try_find_loop;
+                int try_id{};
+                std::shared_ptr<g2o::VertexSE3> try_vertex;
+                boost::optional<Eigen::Matrix4d> try_result;
 
-        // try to keep number of loop-closure edges not too big
-        if (vertice_id_ > 10 && loopclosureEdges_.size() * 5 < odometryEdges_.size())
-        {
-            std::uniform_int_distribution<> rand(0, vertice_id_ - 4);
-            try_id = rand(gen);
+                // try to keep number of loop-closure edges not too big
+                if (vertice_id_ > 10 && loopclosureEdges_.size() * 5 < odometryEdges_.size())
+                {
+                    std::uniform_int_distribution<> rand(0, vertice_id_ - 4);
+                    try_id = rand(gen);
 
-            auto try_cloud = clouds_[try_id];
-            try_vertex = vertices_[try_id];
-            // prev_vertex = vertices_[vertice_id_];
+                    auto try_cloud = clouds_[try_id];
+                    try_vertex = vertices_[try_id];
+                    // prev_vertex = vertices_[vertice_id_];
 
-            try_find_loop = std::thread([&]() { try_result = TryAlignment(try_cloud, previous_cloud_); });
-            try_find_loop.detach();
-        }
+                    try_find_loop = std::thread([&]() { try_result = TryAlignment(try_cloud, previous_cloud_); });
+                    try_find_loop.detach();
+                }
         // we want to find transform from latest cloud into previous cloud
         // this shall be the same as transform from latest "frame" into previous "frame"
         auto result1 = TryAlignment(previous_cloud_, latest_cloud_local);
 
-        if (try_find_loop.joinable())
-        {
-            try_find_loop.join();
-        }
+                if (try_find_loop.joinable())
+                {
+                    try_find_loop.join();
+                }
 
         // "Odometry" edge has value
         if (result1.has_value())
         {
-            if (vertice_id_ == 0)
-            {
-                auto vert0 = std::make_shared<g2o::VertexSE3>();
-                vert0->setId(vertice_id_++);
-                vert0->setToOrigin();
-                vert0->setFixed(true);
-                vertices_.push_back(vert0);
-                clouds_.push_back(previous_cloud_);
-                g2o::HyperGraph::VertexSet vertexSet{vert0.get()};
-                optimizer_.push(vertexSet);
-            }
+            std::cout << "SUCCESSFULL" << std::endl;
+                        if (vertice_id_ == 0)
+                        {
+                            auto vert0 = std::make_shared<g2o::VertexSE3>();
+                            vert0->setId(vertice_id_++);
+                            vert0->setToOrigin();
+                            vert0->setFixed(true);
+                            vertices_.push_back(vert0);
+                            clouds_.push_back(previous_cloud_);
+                            g2o::HyperGraph::VertexSet vertexSet{vert0.get()};
+                            optimizer_.push(vertexSet);
+                        }
 
-            accumulated_odometry_transform_ = result1.value() * accumulated_odometry_transform_;
-            previous_cloud_ = latest_cloud_local;
-            if (odometry_callback_)
+
+            auto shiftangle = GetAbsoluteShiftAngle(result1.value());
+
+            // if translation & rotation are not so big, we not add this latest cloud into the graph, and do not touch accumulated_odometry_transform_
+            // However, still return latest odometry
+            if(shiftangle.first < 0.06 && shiftangle.second < 0.01)
             {
-                odometry_callback_(accumulated_odometry_transform_, latest_cloud_local->header.stamp);
+                if (odometry_callback_)
+                {
+                    odometry_callback_(result1.value() * accumulated_odometry_transform_, latest_cloud_local->header.stamp);
+                }
+            }
+            else
+            {
+                accumulated_odometry_transform_ = result1.value() * accumulated_odometry_transform_;
+                previous_cloud_ = latest_cloud_local;
+                if (odometry_callback_)
+                {
+                    odometry_callback_(accumulated_odometry_transform_, latest_cloud_local->header.stamp);
+                }
+
             }
 
             auto prev_vert = *vertices_.end();
@@ -223,19 +247,20 @@ void LidarSlam::LocalThreadRun()
                 loopclosureEdges_.push_back(loop_edge);
             }
 
-            optimizer_.initializeOptimization();
-            if (optimizer_.optimize(2, true) > 0)
-            {
-                if (mapping_callback_)
-                {
-                    double data[7];
-                    if (new_vert->getEstimateData(data))
-                    {
-
-                        mapping_callback_(accumulated_odometry_transform_, latest_cloud_local->header.stamp);
-                    }
-                }
-            }
+//            optimizer_.initializeOptimization();
+//            if (optimizer_.optimize(2, true) > 0)
+//            {
+//                if (mapping_callback_)
+//                {
+//                    double data[7];
+//                    if (new_vert->getEstimateData(data))
+//                    {
+//                        std::cout << "Mapping Estimated Data = [" << data[0] << "," << data[1] << "," << data[2] << ",";
+//                        std::cout << data[3] << "," << data[4] << "," << data[5] << "," << data[6] << "]" << std::endl;
+//                        mapping_callback_(Eigen::Matrix4d::Identity(), latest_cloud_local->header.stamp);
+//                    }
+//                }
+//            }
         }
     }
 }

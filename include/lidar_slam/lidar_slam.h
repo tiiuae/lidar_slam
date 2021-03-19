@@ -11,10 +11,6 @@
 #include "g2o/types/icp/types_icp.h"
 #include <boost/optional/optional.hpp>
 #include <fast_gicp/gicp/fast_vgicp.hpp>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl/registration/gicp.h>
-#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -65,12 +61,15 @@ class LidarSlam
   private:
     boost::optional<Eigen::Matrix4d> TryAlignment(PointCloudPtr source,
                                                   PointCloudPtr target,
-                                                  float max_misalignment = 0.1F);
+                                                  float max_shift_misalignment = 0.02F,
+                                                  float max_angle_misalignment = 0.005F);
 
     void LocalThreadRun();
 
+    /// @return pair of translation and rotation misalignment
+    static std::pair<double, double> GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix);
+
     g2o::SparseOptimizer optimizer_;
-    std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType> linearSolver_;
     std::unique_ptr<g2o::OptimizationAlgorithmLevenberg> solver_;
 
     int vertice_id_ = 0;
