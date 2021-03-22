@@ -52,7 +52,9 @@ class LidarSlamNode : public rclcpp::Node
 
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-        rclcpp::QoS qos(5);
+        RCLCPP_INFO(get_logger(), "LidarSlamNode cloud_topic = " + cloud_topic);
+
+        rclcpp::QoS qos(10);
         qos = qos.best_effort();
         cloud_subscriber_ = create_subscription<PointCloudMsg>(
             cloud_topic, qos, std::bind(&LidarSlamNode::GrabPointCloud, this, std::placeholders::_1));

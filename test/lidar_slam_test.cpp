@@ -25,3 +25,4 @@ TEST_F(LidarSlamTest, BasicTest)
     LidarSlam::PointCloudPtr cloud(new LidarSlam::PointCloud());
     ASSERT_NO_THROW(slam.AddPointCloud(cloud));
 }
+

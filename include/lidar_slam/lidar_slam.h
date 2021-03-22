@@ -1,14 +1,5 @@
-#include "g2o/config.h"
-#include "g2o/core/block_solver.h"
-#include "g2o/core/optimization_algorithm_levenberg.h"
-#include "g2o/core/robust_kernel_impl.h"
-#include "g2o/core/solver.h"
-#include "g2o/core/sparse_optimizer.h"
-#include "g2o/solvers/cholmod/linear_solver_cholmod.h"
-#include "g2o/solvers/dense/linear_solver_dense.h"
-#include "g2o/solvers/structure_only/structure_only_solver.h"
-#include "g2o/stuff/sampler.h"
-#include "g2o/types/icp/types_icp.h"
+#include <g2o/core/sparse_optimizer.h>
+#include <g2o/types/slam3d/edge_se3.h>
 #include <boost/optional/optional.hpp>
 #include <fast_gicp/gicp/fast_vgicp.hpp>
 #include <memory>
@@ -70,13 +61,12 @@ class LidarSlam
     static std::pair<double, double> GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix);
 
     g2o::SparseOptimizer optimizer_;
-    std::unique_ptr<g2o::OptimizationAlgorithmLevenberg> solver_;
 
     int vertice_id_ = 0;
     int edge_id_ = 0;
-    std::vector<std::shared_ptr<g2o::VertexSE3>> vertices_;
-    std::vector<std::shared_ptr<g2o::EdgeSE3>> odometryEdges_;
-    std::vector<std::shared_ptr<g2o::EdgeSE3>> loopclosureEdges_;
+    std::vector<g2o::VertexSE3*> vertices_;
+    std::vector<g2o::EdgeSE3*> odometryEdges_;
+    std::vector<g2o::EdgeSE3*> loopclosureEdges_;
     std::vector<PointCloudPtr> clouds_;
 
     /// Information matrix (i.e. covariance of the 6DoF measurement: X Y Z QX QY QZ)
