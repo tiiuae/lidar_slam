@@ -101,24 +101,21 @@ class LidarSlamNode : public rclcpp::Node
         return matrix;
     }
 
-    /// Processes Odometry transform, coming from the SLAM
-    /// @param odom2sensor_transform transform from the odometry frame into sensor frame
-    void PublishOdometry(const Eigen::Matrix4d odom2sensor_transform, const std::uint64_t stamp)
+    /// @brief Processes "Sensor Frame Odometry" transform, coming from the SLAM into "Base Frame Odometry"
+    /// As SLAM does not know about robot configuration, it only may estimate odometry transform from current sensor
+    /// pose into initial sensor pose. This, however, would be inconvinient for the robot itself, as odometry needs
+    /// to be defined for "base_link" frame.
+    /// @param sensor_odometry transform from current sernsor frame into initial sensor frame
+    void PublishOdometry(const Eigen::Matrix4d sensor_odometry, const std::uint64_t stamp)
     {
         // In order to re-map transform onto base_frame we need to look for the sensor-to-base transform
+        // As it does not deviates so fast, 10 secs delay is pretty OK
         geometry_msgs::msg::TransformStamped sensor2base_msg =
             tf_buffer_.lookupTransform(base_frame_, sensor_frame_, clock_.now(), tf2::durationFromSec(10.0));
 
         const Eigen::Matrix4d sensor2base = Convert(sensor2base_msg);
-
         const Eigen::Matrix4d base2sensor = sensor2base.inverse();
-
-        // here we apply sensor2base to the Odometry coming from SLAM
-        // we multily it with the pseudo_odom_ on the right to make it looking good in rviz
-        // ToDo: remove that
-        const Eigen::Matrix4d odometry_transform = (sensor2base * odom2sensor_transform * base2sensor).inverse();
-
-        //const Eigen::Matrix4d& odometry_transform = odom2sensor_transform/*.inverse()*/;
+        const Eigen::Matrix4d odometry_transform = sensor2base * sensor_odometry * base2sensor;
 
         TransformStamped msg = Convert(odometry_transform, stamp);
         msg.header.frame_id = odom_frame_;

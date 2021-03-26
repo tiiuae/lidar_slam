@@ -16,7 +16,7 @@ if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif ()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native -pthread")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native -pthread -O3")
 
 set(OpenGL_GL_PREFERENCE "LEGACY")
 
@@ -34,6 +34,7 @@ find_package(nav_msgs REQUIRED)
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(OpenMP REQUIRED)
 
+
 include_directories(${PCL_INCLUDE_DIRS})
 include_directories(
         include
@@ -42,10 +43,15 @@ include_directories(
 
 add_definitions(${PCL_DEFINITIONS})
 
+option(USE_SLAM_LOGGING False)
+if(${USE_SLAM_LOGGING})
+    add_compile_definitions(USE_SLAM_LOGGING)
+endif()
+
+
 add_library(lidar_slam src/lidar_slam.cpp)
 target_link_libraries(lidar_slam g2o::core g2o::types_icp g2o::types_sba g2o::solver_cholmod ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 #types_slam2d types_slam3d solver_cholmod parser_library interface_library
-
 
 add_executable(lidar_slam_node src/lidar_slam_node.cpp )
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)

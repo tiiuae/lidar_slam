@@ -25,7 +25,6 @@ class G2OTest : public ::testing::Test
     }
 
   protected:
-
     g2o::SparseOptimizer optimizer_;
 };
 
