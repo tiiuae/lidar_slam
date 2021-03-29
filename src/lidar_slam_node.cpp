@@ -10,6 +10,8 @@
 #include <tf2_ros/transform_listener.h>
 #include <functional>
 #include <memory>
+
+
 using TransformStamped = geometry_msgs::msg::TransformStamped;
 
 using namespace lidar_slam;
@@ -62,17 +64,17 @@ class LidarSlamNode : public rclcpp::Node
         odometry_publisher_ = create_publisher<OdometryMsg>("/odom", qos);
 
         slam_.SetOdometryCallback(
-            [this](const Eigen::Matrix4d t, const std::uint64_t s) { this->PublishOdometry(t, s); });
+            [this](const Eigen::Isometry3d t, const std::uint64_t s) { this->PublishOdometry(t, s); });
 
-        slam_.SetMappingCallback([this](const Eigen::Matrix4d t, const std::uint64_t s) { this->PublishMap(t, s); });
+        slam_.SetMappingCallback([this](const Eigen::Isometry3d t, const std::uint64_t s) { this->PublishMap(t, s); });
 
         RCLCPP_INFO(get_logger(), "LidarSlamNode successfully initialized");
     }
 
-    static TransformStamped Convert(const Eigen::Matrix4d& transform, const std::uint64_t stamp)
+    static TransformStamped Convert(const Eigen::Isometry3d& transform, const std::uint64_t stamp)
     {
         builtin_interfaces::msg::Time stamp2;
-        Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
+        Eigen::Matrix3d rot = transform.matrix().block(0, 0, 3, 3);
         Eigen::Quaterniond q(rot);
 
         TransformStamped msg;
@@ -89,7 +91,7 @@ class LidarSlamNode : public rclcpp::Node
         return msg;
     }
 
-    static Eigen::Matrix4d Convert(const TransformStamped& msg)
+    static Eigen::Isometry3d Convert(const TransformStamped& msg)
     {
         Eigen::Matrix4d matrix = Eigen::Matrix4d::Identity();
         const auto qm = msg.transform.rotation;
@@ -98,7 +100,7 @@ class LidarSlamNode : public rclcpp::Node
         matrix(0, 3) = msg.transform.translation.x;
         matrix(1, 3) = msg.transform.translation.y;
         matrix(2, 3) = msg.transform.translation.z;
-        return matrix;
+        return Eigen::Isometry3d(matrix);
     }
 
     /// @brief Processes "Sensor Frame Odometry" transform, coming from the SLAM into "Base Frame Odometry"
@@ -106,16 +108,16 @@ class LidarSlamNode : public rclcpp::Node
     /// pose into initial sensor pose. This, however, would be inconvinient for the robot itself, as odometry needs
     /// to be defined for "base_link" frame.
     /// @param sensor_odometry transform from current sernsor frame into initial sensor frame
-    void PublishOdometry(const Eigen::Matrix4d sensor_odometry, const std::uint64_t stamp)
+    void PublishOdometry(const Eigen::Isometry3d sensor_odometry, const std::uint64_t stamp)
     {
         // In order to re-map transform onto base_frame we need to look for the sensor-to-base transform
         // As it does not deviates so fast, 10 secs delay is pretty OK
         geometry_msgs::msg::TransformStamped sensor2base_msg =
             tf_buffer_.lookupTransform(base_frame_, sensor_frame_, clock_.now(), tf2::durationFromSec(10.0));
 
-        const Eigen::Matrix4d sensor2base = Convert(sensor2base_msg);
-        const Eigen::Matrix4d base2sensor = sensor2base.inverse();
-        const Eigen::Matrix4d odometry_transform = sensor2base * sensor_odometry * base2sensor;
+        const Eigen::Isometry3d sensor2base = Convert(sensor2base_msg);
+        const Eigen::Isometry3d base2sensor = sensor2base.inverse();
+        const Eigen::Isometry3d odometry_transform = sensor2base * sensor_odometry * base2sensor;
 
         TransformStamped msg = Convert(odometry_transform, stamp);
         msg.header.frame_id = odom_frame_;
@@ -146,7 +148,7 @@ class LidarSlamNode : public rclcpp::Node
                         std::to_string(r.z) + "," + std::to_string(r.w) + "]");
     }
 
-    void PublishMap(const Eigen::Matrix4d transform, const std::uint64_t stamp)
+    void PublishMap(const Eigen::Isometry3d transform, const std::uint64_t stamp)
     {
         TransformStamped msg = Convert(transform, stamp);
         msg.header.frame_id = map_frame_;

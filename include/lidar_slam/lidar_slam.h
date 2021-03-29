@@ -20,6 +20,7 @@
 namespace lidar_slam
 {
 
+/// Most of the algorithmic parameters are collected here, in one single struct
 struct LidarSlamParameters
 {
     bool automatic_start = true;
@@ -27,13 +28,20 @@ struct LidarSlamParameters
     double gicp_resolution = 0.5;
     double gicp_translation_noise = 0.01;
     double gicp_rotation_noise = 0.001;
+    std::size_t minimal_cloud_size = 20U;
+    double new_node_min_translation = 0.1; // [meters]
+    double new_node_after_rotation = 0.05; // [radians]
+
 };
 
 class G2O_TYPES_SLAM3D_API CloudVertexSE3 : public g2o::VertexSE3
 {
   public:
     using PointCloudPtr = pcl::PointCloud<pcl::PointXYZ>::Ptr;
-    PointCloudPtr cloud;
+    PointCloudPtr cloud{};
+    //std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> covariances{};
+    //std::shared_ptr<pcl::search::KdTree<pcl::PointXYZ>> kdtree{};
+    CloudVertexSE3() : VertexSE3(){}
     CloudVertexSE3(PointCloudPtr init_cloud) : VertexSE3() {cloud = init_cloud;}
 };
 
@@ -41,21 +49,21 @@ class G2O_TYPES_SLAM3D_API CloudVertexSE3 : public g2o::VertexSE3
 class LidarSlam
 {
   public:
-    // EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 
     using Point = pcl::PointXYZ;
     using PointCloud = pcl::PointCloud<Point>;
     using PointCloudPtr = PointCloud::Ptr;
-    using CallbackType = std::function<void(const Eigen::Matrix4d transform, const std::uint64_t stamp)>;
+    using CallbackType = std::function<void(const Eigen::Isometry3d transform, const std::uint64_t stamp)>;
 
     /// Main C-tor
-    LidarSlam(const LidarSlamParameters& params = {});
+    LidarSlam(const LidarSlamParameters& params = LidarSlamParameters());
 
     /// Set-up callback which publishes low-latency (pseudo real-time) transform, which may be used for odometry
     /// It contains "drifty" transform from the very-first frame into very last one
     void SetOdometryCallback(CallbackType&& callback) { odometry_callback_ = callback; }
 
     /// Set-up callback which publishes high-latency transform, suitable for mapping
+    /// returns transform from odometry frame into mapping frame
     void SetMappingCallback(CallbackType&& callback) { mapping_callback_ = callback; }
 
     void Start();
@@ -65,21 +73,7 @@ class LidarSlam
 
     /// Use this function to add new (just arrived) point-cloud into the SLAM
     /// Each new cloud shall have later timestamp than previous
-    void AddPointCloud(const PointCloudPtr& msg)
-    {
-        if (!msg)
-        {
-            throw std::runtime_error("LidarSlam::AddPointCloud() uninitialized cloud given");
-        }
-        if (latest_cloud_ && msg->header.stamp <= latest_cloud_->header.stamp)
-        {
-            throw std::runtime_error("LidarSlam::AddPointCloud() received clouds must have increasing timestamps");
-        }
-        {
-            const std::lock_guard<std::mutex> guard(latest_cloud_mutex_);
-            latest_cloud_ = msg;
-        }
-    }
+    void AddPointCloud(const PointCloudPtr& msg);
 
     /// @return pair of translation and rotation misalignment
     static std::pair<double, double> GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix);
@@ -101,25 +95,18 @@ class LidarSlam
     /// Mutex, controlling both @ref vertices_ and @ref odometryEdges_
     std::mutex vertices_mutex_{};
 
-    /// Loop Closure work in separate thread, thus it needs its own vector for found edges
-    std::vector<g2o::EdgeSE3*> loopclosureEdges_{};
-    /// as well as own mutex
-    std::mutex loopclosure_mutex_{};
-
-
-
     /// Threads for independend SLAM parts
-    std::thread odometry_thread_{}, mapping_thread_{}, loopclousures_thread_{};
+    std::thread odometry_thread_{}, mapping_thread_{};
     /// Respective bool atomics
     std::atomic_bool odometry_thread_running_{};
-    std::atomic_bool loopclousures_thread_running_{};
     std::atomic_bool mapping_thread_running_{};
 
     /// Main loop-functions for respective threads
     void OdometryThread();
-    void LoopClousuresThread();
     void MappingThread();
 
+    /// read-only reference to parameters
+    /// SLAM may not change it, but it still could be changed from outside
     const LidarSlamParameters& params_;
 
     int vertice_id_{}, edge_id_{};

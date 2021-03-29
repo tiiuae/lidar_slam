@@ -6,8 +6,10 @@
 #include <lidar_slam/lidar_slam.h>
 #include <pcl/filters/voxel_grid.h>
 #include <chrono>
+#include <future>
 #include <random>
 #include <thread>
+
 // following includes come last
 #include <fast_gicp/gicp/impl/fast_gicp_impl.hpp>
 #include <fast_gicp/gicp/impl/fast_vgicp_impl.hpp>
@@ -25,11 +27,11 @@ LidarSlam::LidarSlam(const LidarSlamParameters& params)
 {
     Eigen::Matrix3d transNoise = Eigen::Matrix3d::Zero();
     for (int i = 0; i < 3; ++i)
-        transNoise(i, i) = std::pow(params.gicp_translation_noise, 2);
+        transNoise(i, i) = std::pow(params_.gicp_translation_noise, 2);
 
     Eigen::Matrix3d rotNoise = Eigen::Matrix3d::Zero();
     for (int i = 0; i < 3; ++i)
-        rotNoise(i, i) = std::pow(params.gicp_rotation_noise, 2);
+        rotNoise(i, i) = std::pow(params_.gicp_rotation_noise, 2);
 
     icp_information_ = Eigen::Matrix<double, 6, 6>::Zero();
     icp_information_.block<3, 3>(0, 0) = transNoise.inverse();
@@ -41,35 +43,19 @@ LidarSlam::LidarSlam(const LidarSlamParameters& params)
     }
 }
 
-void LidarSlam::LoopClousuresThread()
-{
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    fast_gicp::FastVGICP<Point, Point> loopclosure_gicp_;
-    loopclosure_gicp_.setResolution(params_.gicp_resolution);
-    loopclosure_gicp_.setVoxelAccumulationMode(fast_gicp::VoxelAccumulationMode::ADDITIVE_WEIGHTED);
-    loopclosure_gicp_.setNeighborSearchMethod(fast_gicp::NeighborSearchMethod::DIRECT1);
-    loopclosure_gicp_.setRegularizationMethod(fast_gicp::RegularizationMethod::NONE);
-
-//    SLAM_LOG << "LidarSlam::LoopClousuresThread() is running!" << std::endl;
-//    while (loopclousures_thread_running_)
-//    {
-//        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(10));
-//    }
-//    SLAM_LOG << "LidarSlam::LoopClousuresThread() stopped!" << std::endl;
-}
 
 void LidarSlam::OdometryThread()
 {
-    LidarSlam::PointCloud tmp_cloud1{};
-    Eigen::Matrix4d accumulated_odometry_ = Eigen::Matrix4d::Identity();
-    PointCloudPtr previous_cloud_;
+    LidarSlam::PointCloud tmp_cloud1 {};
+    Eigen::Isometry3d accumulated_odometry = Eigen::Isometry3d::Identity();
+    PointCloudPtr previous_cloud {};
 
-    fast_gicp::FastVGICP<Point, Point> odometry_gicp_;
-    odometry_gicp_.setResolution(params_.gicp_resolution);
-    odometry_gicp_.setVoxelAccumulationMode(fast_gicp::VoxelAccumulationMode::ADDITIVE_WEIGHTED);
-    odometry_gicp_.setNeighborSearchMethod(fast_gicp::NeighborSearchMethod::DIRECT1);
-    odometry_gicp_.setRegularizationMethod(fast_gicp::RegularizationMethod::NONE);
+    fast_gicp::FastVGICP<Point, Point> gicp;
+
+    gicp.setResolution(params_.gicp_resolution);
+    gicp.setVoxelAccumulationMode(fast_gicp::VoxelAccumulationMode::ADDITIVE_WEIGHTED);
+    gicp.setNeighborSearchMethod(fast_gicp::NeighborSearchMethod::DIRECT1);
+    gicp.setRegularizationMethod(fast_gicp::RegularizationMethod::FROBENIUS);
 
     // Adding vertex to the edge (edge->setVertex(..)) changes vertex too, which is not thread-safe
     // So we cannot add last_odometry_vertex_ directly to the Graph, but rather wait for the next odometry step
@@ -86,71 +72,61 @@ void LidarSlam::OdometryThread()
             latest_cloud_local.swap(latest_cloud_);
         }
 
-        if (!latest_cloud_local || (latest_cloud_local->size() < 20U))
+        if (!latest_cloud_local || (latest_cloud_local->size() < params_.minimal_cloud_size))
         {
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(5));
             continue;
         }
 
         // initialize previous_cloud_ as well as first vertex whenever non-empty cloud arrives
-        if (!previous_cloud_)
+        if (!previous_cloud)
         {
-            previous_cloud_ = latest_cloud_local;
-            odometry_gicp_.setInputTarget(previous_cloud_);
-            last_odometry_vertex = new CloudVertexSE3(previous_cloud_);
+            previous_cloud = latest_cloud_local;
+            gicp.setInputTarget(previous_cloud);
+            last_odometry_vertex = new CloudVertexSE3(previous_cloud);
             last_odometry_vertex->setId(vertice_id_++);
             last_odometry_vertex->setToOrigin();
             last_odometry_vertex->setFixed(true);
             last_odometry_vertex->setMarginalized(true);
-            //clouds_[last_odometry_vertex->id()] = previous_cloud_;
 
             if (odometry_callback_)
             {
-                odometry_callback_(accumulated_odometry_, latest_cloud_local->header.stamp);
+                odometry_callback_(accumulated_odometry, latest_cloud_local->header.stamp);
             }
             continue;
         }
 
-        odometry_gicp_.setInputSource(latest_cloud_local);
-        odometry_gicp_.align(tmp_cloud1);
-        if (odometry_gicp_.hasConverged())
+        gicp.setInputSource(latest_cloud_local);
+        gicp.align(tmp_cloud1);
+        if (gicp.hasConverged())
         {
-            const Eigen::Matrix4d result = odometry_gicp_.getFinalTransformation().cast<double>();
+            const Eigen::Matrix4d result = gicp.getFinalTransformation().cast<double>();
+            const Eigen::Isometry3d isometry(result);
 
             SLAM_LOG << "ICP converged to:" << std::endl;
             SLAM_LOG << result << std::endl;
 
-            auto shiftangle = GetAbsoluteShiftAngle(result);
-            if (shiftangle.first < 0.1 && shiftangle.second < 0.01)
+            if (odometry_callback_)
             {
-                // translation & rotation are small, so we don't add this cloud into the graph,
-                // neither change previous_cloud_
-                // However, still return latest odometry
-                if (odometry_callback_)
-                {
-                    odometry_callback_(accumulated_odometry_ * result, latest_cloud_local->header.stamp);
-                }
+                odometry_callback_(accumulated_odometry * isometry, latest_cloud_local->header.stamp);
             }
-            else
+
+            auto shiftangle = GetAbsoluteShiftAngle(result);
+
+            if (shiftangle.first > params_.new_node_min_translation || shiftangle.second > params_.new_node_after_rotation)
             {
-                // motion is significant
-                odometry_gicp_.swapSourceAndTarget();  // keep pre-calculated voxels/kd-tree
-                accumulated_odometry_ = accumulated_odometry_ * result;
-                previous_cloud_ = latest_cloud_local;
+                // when translation & rotation are small, we don't add this cloud into the graph,
+                // neither change previous_cloud_ and accumulated_odometry_
 
-                if (odometry_callback_)
-                {
-                    odometry_callback_(accumulated_odometry_, latest_cloud_local->header.stamp);
-                }
-
-                Eigen::Isometry3d odom(accumulated_odometry_);
+                accumulated_odometry = accumulated_odometry * isometry;
+                previous_cloud = latest_cloud_local;
 
                 // we also add Vertex into the Graph
-                auto vertex = new CloudVertexSE3(previous_cloud_);
+                auto vertex = new CloudVertexSE3(previous_cloud);
                 vertex->setId(vertice_id_++);
                 vertex->setFixed(false);
                 vertex->setMarginalized(true);
-                vertex->setEstimate(odom);
+                vertex->setEstimate(accumulated_odometry);
 
                 auto edge = new g2o::EdgeSE3();
                 edge->setId(edge_id_++);
@@ -160,12 +136,16 @@ void LidarSlam::OdometryThread()
                 edge->setMeasurement(t);
                 edge->setInformation(icp_information_);
 
-                //clouds_[vertex->id()] = previous_cloud_;
+
+                // Store these guys in order not to loose them
+                //gicp.swapSourceCovariances(last_odometry_vertex->covariances);
+                //last_odometry_vertex->kdtree = gicp.sourceKdTree();
                 {
                     const std::lock_guard<std::mutex> guard(vertices_mutex_);
                     vertices_.push_back(last_odometry_vertex);
                     odometryEdges_.push_back(edge);
                 }
+                gicp.swapSourceAndTarget();  // keep pre-calculated covariances/kd-tree
 
                 last_odometry_vertex = vertex;
             }
@@ -174,109 +154,27 @@ void LidarSlam::OdometryThread()
         {
             SLAM_LOG << "ICP haven't converged" << std::endl;
         }
-
-        //        std::thread try_find_loop;
-        //        int try_id{};
-        //        g2o::VertexSE3* try_vertex = nullptr;
-        //        g2o::VertexSE3* prev_vertex = nullptr;
-        //        boost::optional<Eigen::Matrix4d> try_result;
-        //
-        //        // try to keep number of loop-closure edges not too big
-        //        if (vertice_id_ > 10 && loopclosureEdges_.size() * 5 < odometryEdges_.size())
-        //        {
-        //            std::uniform_int_distribution<> rand(0, vertice_id_ - 4);
-        //            try_id = rand(gen);
-        //
-        //            prev_vertex = *vertices_.end();
-        //            auto try_cloud = clouds_[try_id];
-        //            try_vertex = vertices_[try_id];
-        //
-        //            try_find_loop = std::thread([&]() { try_result = TryAlignment(try_cloud, previous_cloud_); });
-        //            try_find_loop.detach();
-        //        }
-        // we want to find transform from latest cloud into previous cloud
-        // this shall be the same as transform from latest "frame" into previous "frame"
-        //        std::cout << "TryAlignment ..." << std::endl;
-        //        auto result1 = TryAlignment(latest_cloud_local, previous_cloud_);
-
-        //        if (try_find_loop.joinable())
-        //        {
-        //            try_find_loop.join();
-        //        }
-
-        // "Odometry" edge has value
-        //        if (result.has_value())
-        //        {
-        //            std::cout << "SUCCESSFULL" << std::endl;
-        //
-        //
-        //
-        //            const Eigen::Matrix4d previous_odometry = accumulated_odometry_;
-
-        // if translation & rotation are not so big, we not add this latest cloud into the graph, and do not touch
-        // accumulated_odometry_ However, still return latest odometry
-        //            if (shiftangle.first < 0.06 && shiftangle.second < 0.01)
-        //            {
-
-        //                auto new_vertex = new g2o::VertexSE3();
-        //                new_vertex->setId(vertice_id_++);
-        //                new_vertex->setFixed(false);
-        //                // new_vert->setEstimate(previous_transform_);
-        //                vertices_.push_back(new_vertex);
-        //                clouds_.push_back(latest_cloud_local);
-        //                optimizer_.addVertex(new_vertex);
-        //
-        //                auto edge = new g2o::EdgeSE3();
-        //                edge->setId(edge_id_++);
-        //                edge->setVertex(0, new_vertex);
-        //                edge->setVertex(1, prev_vertex);
-        //                Eigen::Isometry3d t(result1.value());
-        //                edge->setMeasurement(t);
-        //                edge->setInformation(information_);
-        //                odometryEdges_.push_back(edge);
-        //                optimizer_.addEdge(edge);
-
-        //                if (odometry_callback_)
-        //                {
-        //                    odometry_callback_(result.value() * accumulated_odometry_,
-        //                                       latest_cloud_local->header.stamp);
-        //                }
-        //            }
-        //            else
-        //            {
-        //                accumulated_odometry_ = result.value() * accumulated_odometry_;
-        //                previous_cloud_ = latest_cloud_local;
-        //                if (odometry_callback_)
-        //                {
-        //                    odometry_callback_(accumulated_odometry_, latest_cloud_local->header.stamp);
-        //                }
-        //            }
-
-        //
-        //            if (try_result.has_value() && (try_vertex != nullptr))
-        //            {
-        //                std::cout << "LOOP CLOSURE FOUND!" << std::endl;
-        //                auto loop_edge = new g2o::EdgeSE3();
-        //                loop_edge->setId(edge_id_++);
-        //                loop_edge->setVertex(0, prev_vertex);
-        //                loop_edge->setVertex(1, try_vertex);
-        //                loop_edge->setMeasurement(Eigen::Isometry3d(try_result.value()));
-        //                loop_edge->setInformation(information_);
-        //                loopclosureEdges_.push_back(loop_edge);
-        //                optimizer_.addEdge(loop_edge);
-        //            }
-
-        //        }
-        //        else
-        //        {
-        //            std::cout << "NOT SUCCESSFULL :((" << std::endl;
-        //        }
     }
     SLAM_LOG << "LidarSlam::OdometryThread() stopped!" << std::endl;
 }
 
 void LidarSlam::MappingThread()
 {
+    SLAM_LOG << "LidarSlam::MappingThread() is running!" << std::endl;
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    LidarSlam::PointCloud tmp_cloud1 {};
+    fast_gicp::FastVGICP<Point, Point> gicp;
+    gicp.setResolution(params_.gicp_resolution);
+    gicp.setVoxelAccumulationMode(fast_gicp::VoxelAccumulationMode::ADDITIVE_WEIGHTED);
+    gicp.setNeighborSearchMethod(fast_gicp::NeighborSearchMethod::DIRECT1);
+    gicp.setRegularizationMethod(fast_gicp::RegularizationMethod::FROBENIUS);
+
+    std::size_t vertices_amount = 0U;
+    std::size_t odometry_edges_amount = 0U;
+    std::size_t loop_edges_amount = 0U;
+    bool latest_mapping_already_published = false;
 
     auto linearSolver = g2o::make_unique<g2o::LinearSolverEigen<g2o::BlockSolverX::PoseMatrixType>>();
     linearSolver->setBlockOrdering(false);
@@ -287,31 +185,37 @@ void LidarSlam::MappingThread()
     g2o::SparseOptimizer optimizer_;
     optimizer_.setAlgorithm(solver);
     optimizer_.setVerbose(params_.optimizer_verbose);
-    SLAM_LOG << "LidarSlam::MappingThread() is running!" << std::endl;
 
+
+    std::future<boost::optional<Eigen::Isometry3d>> loop_clousure_future {};
+    CloudVertexSE3* loop_clousure_vertex0 {nullptr};
+    CloudVertexSE3* loop_clousure_vertex1 {nullptr};
+    std::chrono::milliseconds span (1);
 
     CloudVertexSE3* prev_vertex = nullptr;
+    Eigen::Isometry3d prev_odometry{};
 
     while (mapping_thread_running_)
     {
         std::vector<CloudVertexSE3*> vertices{};
         std::vector<g2o::EdgeSE3*> odometryEdges{};
-        std::vector<g2o::EdgeSE3*> loopclosureEdges{};
-
         {
             const std::lock_guard<std::mutex> guard(vertices_mutex_);
             vertices.swap(vertices_);
             odometryEdges.swap(odometryEdges_);
-            loopclosureEdges.swap(loopclosureEdges_);
         }
 
         if (!vertices.empty())
         {
             for (auto vertex : vertices)
             {
+                SLAM_LOG << "LidarSlam::MappingThread() vertex arrived" << std::endl;
                 vertex->setMarginalized(false);
                 optimizer_.addVertex(vertex);
                 prev_vertex = vertex;
+                prev_odometry = vertex->estimate();
+                latest_mapping_already_published = false;
+                vertices_amount ++;
             }
         }
 
@@ -319,32 +223,83 @@ void LidarSlam::MappingThread()
         {
             for (auto edge : odometryEdges)
             {
+                SLAM_LOG << "LidarSlam::MappingThread() edge arrived" << std::endl;
                 optimizer_.addEdge(edge);
+                odometry_edges_amount++;
             }
         }
 
+        if(prev_vertex == nullptr)
+        {
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(5));
+            continue;
+        }
+
+        if(loop_clousure_future.valid() && loop_clousure_future.wait_for(span) == std::future_status::ready)
+        {
+            // loop-clousure result is here!
+            auto result = loop_clousure_future.get();
+            if(result.has_value())
+            {
+                g2o::EdgeSE3* edge = new g2o::EdgeSE3();
+                edge->setVertex(0, loop_clousure_vertex0);
+                edge->setVertex(1, loop_clousure_vertex1);
+                edge->setMeasurement(result.value());
+                optimizer_.addEdge(edge);
+                loop_clousure_vertex0 = nullptr;
+                loop_clousure_vertex1 = nullptr;
+            }
+        }
+
+        // try to find new loop-clousure
+        if(!loop_clousure_future.valid())
+        {
+            // we want no more than 20% of loop-closure edges
+            if(vertices_amount > 10 && loop_edges_amount * 5 < odometry_edges_amount)
+            {
+                loop_clousure_vertex0 = prev_vertex;
+                std::uniform_int_distribution<int> rand(0, vertice_id_ - 4);
+                loop_clousure_vertex1 = reinterpret_cast<CloudVertexSE3*>(optimizer_.vertex(rand(gen)));
+
+                loop_clousure_future = std::async([&]{
+                  boost::optional<Eigen::Isometry3d> result;
+
+                  gicp.setInputTarget(loop_clousure_vertex0->cloud);
+                  //gicp.setInputTarget(loop_clousure_vertex0->cloud, loop_clousure_vertex0->kdtree);
+                  //gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
+
+                  gicp.setInputSource(loop_clousure_vertex1->cloud);
+                  //gicp.setInputSource(loop_clousure_vertex1->cloud, loop_clousure_vertex1->kdtree);
+                  //gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
+                  gicp.align(tmp_cloud1);
+
+                  // return covariance back to corresponsing vertices
+                  //gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
+                  //gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
+
+                  if (gicp.hasConverged())
+                  {
+                      const Eigen::Matrix4d transform = gicp.getFinalTransformation().cast<double>();
+                      result = Eigen::Isometry3d(transform);
+                  }
+                  return result;
+                  });
+            }
+        }
+
+        //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.initializeOptimization()" << std::endl;
         if (optimizer_.initializeOptimization())
         {
-            if (optimizer_.optimize(5, true) > 0)
+            //optimizer_.computeActiveErrors();
+            //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.optimize()" << std::endl;
+            if (optimizer_.optimize(5) > 0)
             {
-                if (mapping_callback_)
+                if (mapping_callback_ && !latest_mapping_already_published)
                 {
-                    const Eigen::Isometry3d p = prev_vertex->estimate();
-//                    const Eigen::Matrix4d odometry2mapping = p.matrix() * previous_odometry;
-//
-//                    const auto t = p.translation();
-//                    const auto r = p.rotation();
-//
-//                    std::cout << "Mapping: " << std::endl;
-//                    std::cout << p.matrix() << std::endl;
-//
-//                    std::cout << "Odometry: " << std::endl;
-//                    std::cout << previous_odometry << std::endl;
-//
-//                    std::cout << "Odometry-to-Mapping: " << std::endl;
-//                    std::cout << odometry2mapping << std::endl;
-
-                    mapping_callback_(p.matrix(), prev_vertex->cloud->header.stamp);
+                    //SLAM_LOG << "LidarSlam::MappingThread() sending mapping_callback_" << std::endl;
+                    const Eigen::Isometry3d p = prev_vertex->estimate() * prev_odometry.inverse();
+                    mapping_callback_(p, prev_vertex->cloud->header.stamp);
+                    latest_mapping_already_published = true;
                 }
             }
         }
@@ -353,34 +308,38 @@ void LidarSlam::MappingThread()
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(50));
         }
     }
+    optimizer_.clear();
+    bool stop = true;
+    optimizer_.setForceStopFlag(&stop);
 
     SLAM_LOG << "LidarSlam::MappingThread() stopped!" << std::endl;
 }
 
 void LidarSlam::Start()
 {
+    if (!mapping_thread_running_ && !mapping_thread_.joinable())
+    {
+        mapping_thread_running_ = true;
+        mapping_thread_ = std::thread(&LidarSlam::MappingThread, this);
+    }
+
     if (!odometry_thread_running_ && !odometry_thread_.joinable())
     {
         odometry_thread_running_ = true;
         odometry_thread_ = std::thread(&LidarSlam::OdometryThread, this);
     }
-    if (loopclousures_thread_running_ && !loopclousures_thread_.joinable())
-    {
-        loopclousures_thread_running_ = true;
-        loopclousures_thread_ = std::thread(&LidarSlam::LoopClousuresThread, this);
-    }
-    if (mapping_thread_running_ && !mapping_thread_.joinable())
-    {
-        mapping_thread_running_ = true;
-        mapping_thread_ = std::thread(&LidarSlam::MappingThread, this);
-    }
+//    if (loopclousure_thread_running_ && !loopclousure_thread_.joinable())
+//    {
+//        loopclousure_thread_running_ = true;
+//        loopclousure_thread_ = std::thread(&LidarSlam::LoopClousureThread, this);
+//    }
 }
 
 void LidarSlam::Stop()
 {
     odometry_thread_running_ = false;
     mapping_thread_running_ = false;
-    loopclousures_thread_running_ = false;
+    //loopclousure_thread_running_ = false;
     if (odometry_thread_.joinable())
     {
         odometry_thread_.join();
@@ -389,16 +348,33 @@ void LidarSlam::Stop()
     {
         mapping_thread_.join();
     }
-    if (loopclousures_thread_.joinable())
-    {
-        loopclousures_thread_.join();
-    }
+//    if (loopclousure_thread_.joinable())
+//    {
+//        loopclousure_thread_.join();
+//    }
 }
 
 LidarSlam::~LidarSlam()
 {
     Stop();
 }
+
+void LidarSlam::AddPointCloud(const PointCloudPtr& msg)
+{
+    if (!msg)
+    {
+        throw std::runtime_error("LidarSlam::AddPointCloud() uninitialized cloud given");
+    }
+    if (latest_cloud_ && msg->header.stamp <= latest_cloud_->header.stamp)
+    {
+        throw std::runtime_error("LidarSlam::AddPointCloud() received clouds must have increasing timestamps");
+    }
+    {
+        const std::lock_guard<std::mutex> guard(latest_cloud_mutex_);
+        latest_cloud_ = msg;
+    }
+}
+
 
 std::pair<double, double> LidarSlam::GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix)
 {
@@ -411,7 +387,7 @@ std::pair<double, double> LidarSlam::GetAbsoluteShiftAngle(const Eigen::Matrix4d
     const double rotation =
         std::sqrt(angle.x() * angle.x() + angle.y() * angle.y() + angle.z() * angle.z()) * angle.w();
 
-    return std::make_pair(translation, rotation);
+    return std::make_pair(translation, rotation * 2.);
 }
 
 }  // namespace lidar_slam
