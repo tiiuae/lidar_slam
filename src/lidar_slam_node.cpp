@@ -30,7 +30,8 @@ class LidarSlamNode : public rclcpp::Node
 
     LidarSlamNode()
         : Node("lidar_slam"),
-          slam_{},
+          params_(),
+          slam_(params_),
           base_frame_{},
           map_frame_{},
           odom_frame_{},
@@ -110,16 +111,17 @@ class LidarSlamNode : public rclcpp::Node
     /// @param sensor_odometry transform from current sernsor frame into initial sensor frame
     void PublishOdometry(const Eigen::Isometry3d sensor_odometry, const std::uint64_t stamp)
     {
-        // In order to re-map transform onto base_frame we need to look for the sensor-to-base transform
-        // As it does not deviates so fast, 10 secs delay is pretty OK
-        geometry_msgs::msg::TransformStamped sensor2base_msg =
-            tf_buffer_.lookupTransform(base_frame_, sensor_frame_, clock_.now(), tf2::durationFromSec(10.0));
-
-        const Eigen::Isometry3d sensor2base = Convert(sensor2base_msg);
-        const Eigen::Isometry3d base2sensor = sensor2base.inverse();
-        const Eigen::Isometry3d odometry_transform = sensor2base * sensor_odometry * base2sensor;
-
-        TransformStamped msg = Convert(odometry_transform, stamp);
+//        // In order to re-map transform onto base_frame we need to look for the sensor-to-base transform
+//        // As it does not deviates so fast, 10 secs delay is pretty OK
+//        geometry_msgs::msg::TransformStamped sensor2base_msg =
+//            tf_buffer_.lookupTransform(base_frame_, sensor_frame_, clock_.now(), tf2::durationFromSec(10.0));
+//
+//        const Eigen::Isometry3d sensor2base = Convert(sensor2base_msg);
+//        const Eigen::Isometry3d base2sensor = sensor2base.inverse();
+//        const Eigen::Isometry3d odometry_transform = sensor2base * sensor_odometry * base2sensor;
+//
+//        TransformStamped msg = Convert(odometry_transform, stamp);
+        TransformStamped msg = Convert(sensor_odometry, stamp);
         msg.header.frame_id = odom_frame_;
         msg.child_frame_id = base_frame_;
         tf_broadcaster_->sendTransform(msg);
@@ -154,9 +156,20 @@ class LidarSlamNode : public rclcpp::Node
         msg.header.frame_id = map_frame_;
         msg.child_frame_id = odom_frame_;
         tf_broadcaster_->sendTransform(msg);
+
+        const auto r = msg.transform.rotation;
+        const auto t = msg.transform.translation;
+        RCLCPP_INFO(get_logger(),
+                    "Mapping translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," +
+                    std::to_string(t.z) + "]");
+        RCLCPP_INFO(get_logger(),
+                    "Mapping rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," +
+                    std::to_string(r.z) + "," + std::to_string(r.w) + "]");
+
     }
 
   private:
+    LidarSlamParameters params_;
     LidarSlam slam_;
     std::string base_frame_, map_frame_, odom_frame_, sensor_frame_;
     rclcpp::Subscription<PointCloudMsg>::SharedPtr cloud_subscriber_;

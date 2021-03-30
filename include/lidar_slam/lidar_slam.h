@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #ifndef FOG_SW_LIDAR_SLAM_H
 #define FOG_SW_LIDAR_SLAM_H
@@ -25,25 +26,28 @@ struct LidarSlamParameters
 {
     bool automatic_start = true;
     bool optimizer_verbose = false;
-    double gicp_resolution = 0.5;
-    double gicp_translation_noise = 0.01;
-    double gicp_rotation_noise = 0.001;
+    double gicp_resolution = 0.25;
+    double gicp_translation_noise = 0.05; // [meters]
+    double gicp_rotation_noise = 0.002;  // [radians]
     std::size_t minimal_cloud_size = 20U;
     double new_node_min_translation = 0.1; // [meters]
     double new_node_after_rotation = 0.05; // [radians]
+    int loop_closure_min_vertices = 5;
+    int loop_closure_edge_rato = 2;
+
 
 };
 
-class G2O_TYPES_SLAM3D_API CloudVertexSE3 : public g2o::VertexSE3
-{
-  public:
-    using PointCloudPtr = pcl::PointCloud<pcl::PointXYZ>::Ptr;
-    PointCloudPtr cloud{};
-    //std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> covariances{};
-    //std::shared_ptr<pcl::search::KdTree<pcl::PointXYZ>> kdtree{};
-    CloudVertexSE3() : VertexSE3(){}
-    CloudVertexSE3(PointCloudPtr init_cloud) : VertexSE3() {cloud = init_cloud;}
-};
+//class G2O_TYPES_SLAM3D_API CloudVertexSE3 : public g2o::VertexSE3
+//{
+//  public:
+//    using PointCloudPtr = pcl::PointCloud<pcl::PointXYZ>::Ptr;
+//    PointCloudPtr cloud{};
+//    //std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> covariances{};
+//    //std::shared_ptr<pcl::search::KdTree<pcl::PointXYZ>> kdtree{};
+//    CloudVertexSE3() : VertexSE3(){}
+//    CloudVertexSE3(PointCloudPtr init_cloud) : VertexSE3() {cloud = init_cloud;}
+//};
 
 /// Lidar-SLAM algorithm, for working with PointClouds
 class LidarSlam
@@ -53,6 +57,8 @@ class LidarSlam
     using Point = pcl::PointXYZ;
     using PointCloud = pcl::PointCloud<Point>;
     using PointCloudPtr = PointCloud::Ptr;
+    using CloudConstPtr = PointCloud::ConstPtr;
+
     using CallbackType = std::function<void(const Eigen::Isometry3d transform, const std::uint64_t stamp)>;
 
     /// Main C-tor
@@ -90,7 +96,7 @@ class LidarSlam
     /// @brief List of vertices, waiting to be added into the Graph
     /// Every such vertex must be marginalized, in order not to ruin currently running optimization
     /// Mapping thread will set them correct when adding into the Graph
-    std::vector<CloudVertexSE3*> vertices_{};
+    std::vector<g2o::VertexSE3*> vertices_{};
     std::vector<g2o::EdgeSE3*> odometryEdges_{};
     /// Mutex, controlling both @ref vertices_ and @ref odometryEdges_
     std::mutex vertices_mutex_{};
@@ -107,12 +113,15 @@ class LidarSlam
 
     /// read-only reference to parameters
     /// SLAM may not change it, but it still could be changed from outside
-    const LidarSlamParameters& params_;
+    volatile const LidarSlamParameters& params_;
 
-    int vertice_id_{}, edge_id_{};
+    std::atomic<int> vertex_id_{}, edge_id_{};
 
     /// Information matrix (i.e. inverse covariance of the 6DoF measurement: X Y Z QX QY QZ)
     Eigen::Matrix<double, 6, 6> icp_information_{};
+
+    std::unordered_map<int, CloudConstPtr> clouds_{};
+    std::mutex clouds_mutex_{};
 
 };
 

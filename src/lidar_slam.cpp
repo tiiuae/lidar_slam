@@ -60,7 +60,7 @@ void LidarSlam::OdometryThread()
     // Adding vertex to the edge (edge->setVertex(..)) changes vertex too, which is not thread-safe
     // So we cannot add last_odometry_vertex_ directly to the Graph, but rather wait for the next odometry step
     // During this time we keep "current" odometry vertex here
-    CloudVertexSE3* last_odometry_vertex {nullptr};
+    g2o::VertexSE3* last_odometry_vertex {nullptr};
 
     SLAM_LOG << "LidarSlam::OdometryThread() is running!" << std::endl;
     while (odometry_thread_running_)
@@ -83,11 +83,15 @@ void LidarSlam::OdometryThread()
         {
             previous_cloud = latest_cloud_local;
             gicp.setInputTarget(previous_cloud);
-            last_odometry_vertex = new CloudVertexSE3(previous_cloud);
-            last_odometry_vertex->setId(vertice_id_++);
+            last_odometry_vertex = new g2o::VertexSE3();
+            last_odometry_vertex->setId(vertex_id_++);
             last_odometry_vertex->setToOrigin();
             last_odometry_vertex->setFixed(true);
             last_odometry_vertex->setMarginalized(true);
+            {
+                const std::lock_guard<std::mutex> guard(clouds_mutex_);
+                clouds_[last_odometry_vertex->id()] = CloudConstPtr (previous_cloud);
+            }
 
             if (odometry_callback_)
             {
@@ -103,8 +107,8 @@ void LidarSlam::OdometryThread()
             const Eigen::Matrix4d result = gicp.getFinalTransformation().cast<double>();
             const Eigen::Isometry3d isometry(result);
 
-            SLAM_LOG << "ICP converged to:" << std::endl;
-            SLAM_LOG << result << std::endl;
+            SLAM_LOG << "ICP converged" << std::endl;
+            //SLAM_LOG << result << std::endl;
 
             if (odometry_callback_)
             {
@@ -117,16 +121,20 @@ void LidarSlam::OdometryThread()
             {
                 // when translation & rotation are small, we don't add this cloud into the graph,
                 // neither change previous_cloud_ and accumulated_odometry_
-
                 accumulated_odometry = accumulated_odometry * isometry;
                 previous_cloud = latest_cloud_local;
 
                 // we also add Vertex into the Graph
-                auto vertex = new CloudVertexSE3(previous_cloud);
-                vertex->setId(vertice_id_++);
+                auto vertex = new g2o::VertexSE3();
+                vertex->setId(vertex_id_++);
                 vertex->setFixed(false);
                 vertex->setMarginalized(true);
                 vertex->setEstimate(accumulated_odometry);
+
+                {
+                    const std::lock_guard<std::mutex> guard(clouds_mutex_);
+                    clouds_[vertex->id()] = CloudConstPtr (previous_cloud);
+                }
 
                 auto edge = new g2o::EdgeSE3();
                 edge->setId(edge_id_++);
@@ -162,42 +170,54 @@ void LidarSlam::MappingThread()
 {
     SLAM_LOG << "LidarSlam::MappingThread() is running!" << std::endl;
 
-    std::random_device rd;
+    std::random_device rd{};
     std::mt19937 gen(rd());
-    LidarSlam::PointCloud tmp_cloud1 {};
+
     fast_gicp::FastVGICP<Point, Point> gicp;
     gicp.setResolution(params_.gicp_resolution);
     gicp.setVoxelAccumulationMode(fast_gicp::VoxelAccumulationMode::ADDITIVE_WEIGHTED);
     gicp.setNeighborSearchMethod(fast_gicp::NeighborSearchMethod::DIRECT1);
     gicp.setRegularizationMethod(fast_gicp::RegularizationMethod::FROBENIUS);
 
-    std::size_t vertices_amount = 0U;
-    std::size_t odometry_edges_amount = 0U;
-    std::size_t loop_edges_amount = 0U;
-    bool latest_mapping_already_published = false;
-
+    /// Graph Optimizer
+    g2o::SparseOptimizer optimizer_;
     auto linearSolver = g2o::make_unique<g2o::LinearSolverEigen<g2o::BlockSolverX::PoseMatrixType>>();
     linearSolver->setBlockOrdering(false);
     auto blockSolver = g2o::make_unique<g2o::BlockSolverX>(std::move(linearSolver));
     auto solver = new g2o::OptimizationAlgorithmLevenberg(std::move(blockSolver));
-
-    /// Graph Optimizer
-    g2o::SparseOptimizer optimizer_;
     optimizer_.setAlgorithm(solver);
     optimizer_.setVerbose(params_.optimizer_verbose);
 
+    // local variables required for loop-closure
+    struct LoopClosureSearchResult
+    {
+        g2o::VertexSE3* loop_clousure_vertex0{nullptr};
+        g2o::VertexSE3* loop_clousure_vertex1{nullptr};
+        boost::optional<Eigen::Isometry3d> result;
+    };
 
-    std::future<boost::optional<Eigen::Isometry3d>> loop_clousure_future {};
-    CloudVertexSE3* loop_clousure_vertex0 {nullptr};
-    CloudVertexSE3* loop_clousure_vertex1 {nullptr};
-    std::chrono::milliseconds span (1);
+    std::future<LoopClosureSearchResult> loop_clousure_future{};
 
-    CloudVertexSE3* prev_vertex = nullptr;
-    Eigen::Isometry3d prev_odometry{};
+    const std::chrono::milliseconds span(1);
+
+    struct VertexInfo
+    {
+        int id;
+        g2o::VertexSE3* vertex {nullptr};
+        Eigen::Isometry3d odometry{};
+        CloudConstPtr cloud;
+        // avoids sending same-frame mapping several times
+        std::atomic<bool> mapping_already_published {false};
+    };
+
+    VertexInfo last_mapping_vertex{};
+    std::atomic<int> latest_loop_closure_vertex_id {};
+
+    int loop_edges_amount = 0U;
 
     while (mapping_thread_running_)
     {
-        std::vector<CloudVertexSE3*> vertices{};
+        std::vector<g2o::VertexSE3*> vertices{};
         std::vector<g2o::EdgeSE3*> odometryEdges{};
         {
             const std::lock_guard<std::mutex> guard(vertices_mutex_);
@@ -212,10 +232,12 @@ void LidarSlam::MappingThread()
                 SLAM_LOG << "LidarSlam::MappingThread() vertex arrived" << std::endl;
                 vertex->setMarginalized(false);
                 optimizer_.addVertex(vertex);
-                prev_vertex = vertex;
-                prev_odometry = vertex->estimate();
-                latest_mapping_already_published = false;
-                vertices_amount ++;
+                last_mapping_vertex.vertex = vertex;
+                last_mapping_vertex.id = vertex->id();
+                last_mapping_vertex.odometry = vertex->estimate();
+                last_mapping_vertex.mapping_already_published = false;
+                const std::lock_guard<std::mutex> guard(clouds_mutex_);
+                last_mapping_vertex.cloud = clouds_.at(last_mapping_vertex.id);
             }
         }
 
@@ -225,50 +247,76 @@ void LidarSlam::MappingThread()
             {
                 SLAM_LOG << "LidarSlam::MappingThread() edge arrived" << std::endl;
                 optimizer_.addEdge(edge);
-                odometry_edges_amount++;
             }
         }
 
-        if(prev_vertex == nullptr)
+        if(last_mapping_vertex.vertex == nullptr)
         {
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(5));
             continue;
         }
 
-        if(loop_clousure_future.valid() && loop_clousure_future.wait_for(span) == std::future_status::ready)
+        // process loop-clousures
+        if(loop_clousure_future.valid())
         {
-            // loop-clousure result is here!
-            auto result = loop_clousure_future.get();
-            if(result.has_value())
+            if(loop_clousure_future.wait_for(span) == std::future_status::ready)
             {
-                g2o::EdgeSE3* edge = new g2o::EdgeSE3();
-                edge->setVertex(0, loop_clousure_vertex0);
-                edge->setVertex(1, loop_clousure_vertex1);
-                edge->setMeasurement(result.value());
-                optimizer_.addEdge(edge);
-                loop_clousure_vertex0 = nullptr;
-                loop_clousure_vertex1 = nullptr;
+                // loop-clousure result is here!
+                auto result = loop_clousure_future.get();
+                if(result.result.has_value() && result.loop_clousure_vertex0 != nullptr && result.loop_clousure_vertex1 != nullptr)
+                {
+                    SLAM_LOG << "Loop Closure found!" << std::endl;
+                    SLAM_LOG << result.result.value().matrix() << std::endl;
+                    latest_loop_closure_vertex_id = result.loop_clousure_vertex0->id();
+
+                    auto edge = new g2o::EdgeSE3();
+                    edge->setId(edge_id_++);
+                    edge->setVertex(0, result.loop_clousure_vertex0);
+                    edge->setVertex(1, result.loop_clousure_vertex1);
+                    edge->setMeasurement(result.result.value());
+                    edge->setInformation(icp_information_);
+                    optimizer_.addEdge(edge);
+                    loop_edges_amount ++;
+                }
             }
         }
-
-        // try to find new loop-clousure
-        if(!loop_clousure_future.valid())
+        else
         {
-            // we want no more than 20% of loop-closure edges
-            if(vertices_amount > 10 && loop_edges_amount * 5 < odometry_edges_amount)
+            const bool enough_vertices = last_mapping_vertex.id > params_.loop_closure_min_vertices;
+            // we want no more than some % of loop-closure edges
+            const bool not_too_many_loop_closures = loop_edges_amount * params_.loop_closure_edge_rato < edge_id_;
+            const bool was_not_looped_yet = last_mapping_vertex.id != latest_loop_closure_vertex_id;
+
+            if(enough_vertices && not_too_many_loop_closures && was_not_looped_yet)
             {
-                loop_clousure_vertex0 = prev_vertex;
-                std::uniform_int_distribution<int> rand(0, vertice_id_ - 4);
-                loop_clousure_vertex1 = reinterpret_cast<CloudVertexSE3*>(optimizer_.vertex(rand(gen)));
 
-                loop_clousure_future = std::async([&]{
-                  boost::optional<Eigen::Isometry3d> result;
+                LoopClosureSearchResult future_result{};
+                future_result.loop_clousure_vertex0 = last_mapping_vertex.vertex;
+                latest_loop_closure_vertex_id = last_mapping_vertex.id;
 
-                  gicp.setInputTarget(loop_clousure_vertex0->cloud);
+                std::uniform_int_distribution<int> rand(0, last_mapping_vertex.id - 1);
+                int other_id = rand(gen);
+                while(other_id == last_mapping_vertex.id)
+                {
+                    other_id = rand(gen);
+                }
+
+                SLAM_LOG << "Trying to find Loop Closure (between Vertex# " << last_mapping_vertex.id << " and Vertex#" << other_id << ")" << std::endl;
+
+
+                future_result.loop_clousure_vertex1 = (g2o::VertexSE3*)optimizer_.vertex(other_id);
+
+
+                loop_clousure_future = std::async([&](){
+                  LoopClosureSearchResult result{future_result.loop_clousure_vertex0, future_result.loop_clousure_vertex1};
+                  LidarSlam::PointCloud tmp_cloud1 {};
+                  //boost::optional<Eigen::Isometry3d> result;
+
+                  gicp.setInputTarget(last_mapping_vertex.cloud);
                   //gicp.setInputTarget(loop_clousure_vertex0->cloud, loop_clousure_vertex0->kdtree);
                   //gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
 
-                  gicp.setInputSource(loop_clousure_vertex1->cloud);
+                  gicp.setInputSource(clouds_.at(other_id));
                   //gicp.setInputSource(loop_clousure_vertex1->cloud, loop_clousure_vertex1->kdtree);
                   //gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
                   gicp.align(tmp_cloud1);
@@ -280,26 +328,28 @@ void LidarSlam::MappingThread()
                   if (gicp.hasConverged())
                   {
                       const Eigen::Matrix4d transform = gicp.getFinalTransformation().cast<double>();
-                      result = Eigen::Isometry3d(transform);
+                      result.result = Eigen::Isometry3d(transform);
                   }
                   return result;
                   });
+
             }
         }
 
         //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.initializeOptimization()" << std::endl;
         if (optimizer_.initializeOptimization())
         {
-            //optimizer_.computeActiveErrors();
+
             //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.optimize()" << std::endl;
             if (optimizer_.optimize(5) > 0)
             {
-                if (mapping_callback_ && !latest_mapping_already_published)
+                if (mapping_callback_ && latest_loop_closure_vertex_id != last_mapping_vertex.id)
                 {
-                    //SLAM_LOG << "LidarSlam::MappingThread() sending mapping_callback_" << std::endl;
-                    const Eigen::Isometry3d p = prev_vertex->estimate() * prev_odometry.inverse();
-                    mapping_callback_(p, prev_vertex->cloud->header.stamp);
-                    latest_mapping_already_published = true;
+                    SLAM_LOG << "LidarSlam::MappingThread() sending mapping_callback_" << std::endl;
+
+                    const Eigen::Isometry3d p = last_mapping_vertex.vertex->estimate() * last_mapping_vertex.odometry.inverse();
+                    mapping_callback_(p, last_mapping_vertex.cloud->header.stamp);
+                    latest_loop_closure_vertex_id = last_mapping_vertex.id;
                 }
             }
         }
@@ -308,6 +358,12 @@ void LidarSlam::MappingThread()
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(50));
         }
     }
+    // make sure std::future is complete before exit
+    if(loop_clousure_future.valid())
+    {
+        loop_clousure_future.get();
+    }
+
     optimizer_.clear();
     bool stop = true;
     optimizer_.setForceStopFlag(&stop);
@@ -328,18 +384,12 @@ void LidarSlam::Start()
         odometry_thread_running_ = true;
         odometry_thread_ = std::thread(&LidarSlam::OdometryThread, this);
     }
-//    if (loopclousure_thread_running_ && !loopclousure_thread_.joinable())
-//    {
-//        loopclousure_thread_running_ = true;
-//        loopclousure_thread_ = std::thread(&LidarSlam::LoopClousureThread, this);
-//    }
 }
 
 void LidarSlam::Stop()
 {
     odometry_thread_running_ = false;
     mapping_thread_running_ = false;
-    //loopclousure_thread_running_ = false;
     if (odometry_thread_.joinable())
     {
         odometry_thread_.join();
@@ -348,10 +398,6 @@ void LidarSlam::Stop()
     {
         mapping_thread_.join();
     }
-//    if (loopclousure_thread_.joinable())
-//    {
-//        loopclousure_thread_.join();
-//    }
 }
 
 LidarSlam::~LidarSlam()

@@ -14,7 +14,6 @@ class LidarSlamTest : public ::testing::Test
             [this](const Eigen::Isometry3d t, const std::uint64_t s) { this->PublishOdometry(t, s); });
 
         slam_.SetMappingCallback([this](const Eigen::Isometry3d t, const std::uint64_t s) { this->PublishMap(t, s); });
-        slam_.Start();
     }
 
   protected:
@@ -96,6 +95,7 @@ class LidarSlamTest : public ::testing::Test
 /// Basic test to check that SLAM throws only when expected
 TEST_F(LidarSlamTest, BasicTest)
 {
+    slam_.Start();
     LidarSlam::PointCloudPtr empty_cloud;
     LidarSlam::PointCloudPtr cloud1(new LidarSlam::PointCloud());
     LidarSlam::PointCloudPtr cloud2(new LidarSlam::PointCloud());
@@ -123,6 +123,7 @@ TEST_F(LidarSlamTest, BasicTest)
 /// Basic Odometry test
 TEST_F(LidarSlamTest, BasicOdometryTest)
 {
+    slam_.Start();
     const float shift = 0.2;
     auto cloud1 = DistinctiveSurface();
     auto cloud2 = TranslateSurface(cloud1, shift, shift, shift);
@@ -156,8 +157,9 @@ TEST_F(LidarSlamTest, BasicOdometryTest)
 }
 
 /// Basic Mapping Test
- TEST_F(LidarSlamTest, BasicMappingTest)
+TEST_F(LidarSlamTest, BasicMappingTest)
 {
+    slam_.Start();
     const float shift = 0.13;
     auto cloud1 = DistinctiveSurface();
     auto cloud2 = TranslateSurface(cloud1, shift, shift, shift);
@@ -168,16 +170,16 @@ TEST_F(LidarSlamTest, BasicOdometryTest)
     cloud3->header.stamp = 3U;
 
     EXPECT_NO_THROW(slam_.AddPointCloud(cloud1));
-    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(10));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(100));
     ASSERT_EQ(1U, odometry_published);  // at first slam sends "initialization" odometry
     EXPECT_EQ(1U, latest_odometry_stamp_);
 
     EXPECT_NO_THROW(slam_.AddPointCloud(cloud2));
-    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(200));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(500));
     ASSERT_EQ(2U, odometry_published);
 
     EXPECT_NO_THROW(slam_.AddPointCloud(cloud3));
-    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(100));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(500));
 
     slam_.Stop();
 
@@ -192,6 +194,56 @@ TEST_F(LidarSlamTest, BasicOdometryTest)
 
     ASSERT_EQ(1U, mapping_published);
     EXPECT_EQ(2U, latest_mapping_stamp_);
+    auto res2 = LidarSlam::GetAbsoluteShiftAngle(latest_mapping_.matrix());
+    EXPECT_NEAR(0.F, res2.second, 0.01F);
+    EXPECT_NEAR(0, latest_mapping_(0,3), 0.01F);
+    EXPECT_NEAR(0, latest_mapping_(1,3), 0.01F);
+    EXPECT_NEAR(0, latest_mapping_(2,3), 0.01F);
+}
+
+
+TEST_F(LidarSlamTest, LoopClosuresTest)
+{
+    // "enable" loop-closures
+    params_.loop_closure_min_vertices = 2;
+    params_.loop_closure_edge_rato = 1;
+    slam_.Start();
+
+
+    const float shift = 0.13;
+    auto cloud1 = DistinctiveSurface();
+    auto cloud2 = TranslateSurface(cloud1, shift, shift, shift);
+    auto cloud3 = TranslateSurface(cloud2, shift, shift, shift);
+    auto cloud4 = TranslateSurface(cloud3, shift, shift, shift);
+
+    cloud1->header.stamp = 1U;
+    cloud2->header.stamp = 2U;
+    cloud3->header.stamp = 3U;
+    cloud4->header.stamp = 4U;
+
+    EXPECT_NO_THROW(slam_.AddPointCloud(cloud1));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(100));
+    ASSERT_EQ(1U, odometry_published);  // at first slam sends "initialization" odometry
+    EXPECT_EQ(1U, latest_odometry_stamp_);
+
+    EXPECT_NO_THROW(slam_.AddPointCloud(cloud2));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(500));
+    ASSERT_EQ(2U, odometry_published);
+
+    EXPECT_NO_THROW(slam_.AddPointCloud(cloud3));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(500));
+
+    EXPECT_NO_THROW(slam_.AddPointCloud(cloud4));
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(600));
+
+
+    slam_.Stop();
+
+    ASSERT_EQ(4U, odometry_published);
+    EXPECT_EQ(4U, latest_odometry_stamp_);
+
+    ASSERT_EQ(2U, mapping_published);
+    EXPECT_EQ(3U, latest_mapping_stamp_);
     auto res2 = LidarSlam::GetAbsoluteShiftAngle(latest_mapping_.matrix());
     EXPECT_NEAR(0.F, res2.second, 0.01F);
     EXPECT_NEAR(0, latest_mapping_(0,3), 0.01F);
