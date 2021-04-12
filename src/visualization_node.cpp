@@ -14,29 +14,29 @@
 
 std::string vertex =
     "#version 120\n\r"
-    "attribute vec4 XYZ;\n\r"
-    "attribute ivec4 RGB;\n\r"
-    "varying vec4 rgb;\n\r"
+    "attribute vec3 RGB;\n\r"
+    "attribute vec3 XYZ;\n\r"
+    "varying vec3 rgb;\n\r"
     "uniform mat4 C1;\n\r"
     "uniform mat4 K;\n\r"
     "void main()\n\r"
     "{\n\r"
-    "    rgb = vec4(float(RGB.x)/255.0, float(RGB.y)/255.0, float(RGB.z)/255.0, 1.0);\n\r"
+    "    rgb = RGB;\n\r"
     "    vec4 xyz1 = vec4(XYZ.x, XYZ.y, XYZ.z, 1.0);\n\r"
     "    vec4 uvz = K * C1 * xyz1;\n\r"
     "    vec2 uv = vec2(uvz.x / uvz.z, uvz.y / uvz.z);\n\r"
     "    float u = 2.0 * uv.x / 1024.0 - 1.0;\n\r"
     "    float v = 1.0 - 2.0 * uv.y / 768.0;\n\r"
     "    gl_Position = vec4(u, v, 0.0, 1.0);\n\r"
-    "    gl_PointSize = 2.0;\n\r"
+    "    gl_PointSize = 3.0;\n\r"
     "}\n\r";
 
 std::string frag =
     "#version 120\n\r"
-    "varying vec4 rgb;\n\r"
+    "varying vec3 rgb;\n\r"
     "void main()\n\r"
     "{\n\r"
-    "    gl_FragColor = rgb;/*vec4(1.0, 1.0, 1.0, 1.0);*/\n\r"
+    "    gl_FragColor = vec4(rgb.b, rgb.g, rgb.r, 1.0);\n\r"
     "}\n\r";
 using namespace lidar_slam;
 
@@ -80,7 +80,8 @@ class VisualizationNode : public rclcpp::Node
     rclcpp::Subscription<PointCloudMsg>::SharedPtr cloud_subscriber_;
     rclcpp::Subscription<OdometryMsg>::SharedPtr odometry_subscriber_;
 
-    PointCloud::Ptr latest_cloud_;
+    //PointCloud::Ptr latest_cloud_;
+    PointCloudMsg::SharedPtr latest_cloud_;
     std::mutex latest_cloud_mutex_;
     OdometryMsg::SharedPtr latest_odometry_;
     std::mutex latest_odometry_mutex_;
@@ -95,15 +96,8 @@ class VisualizationNode : public rclcpp::Node
 
     void GrabPointCloud(const PointCloudMsg::SharedPtr msg)
     {
-        PointCloud::Ptr cloud(new PointCloud());
-        pcl::moveFromROSMsg<Point>(*msg, *cloud);
-        const std::int32_t sec = msg->header.stamp.sec;
-        const std::uint32_t nanosec = msg->header.stamp.nanosec;
-        cloud->header.stamp = std::uint64_t(sec) * Helpers::NanoFactor + std::uint64_t(nanosec);
-
         std::lock_guard<std::mutex> lock(latest_cloud_mutex_);
-        latest_cloud_.swap(cloud);
-        std::cout << "Cloud Arrived: size=" << latest_cloud_->size() << std::endl;
+        latest_cloud_ = msg;
     }
 
     void GrabOdometry(const OdometryMsg::SharedPtr msg)
@@ -115,7 +109,8 @@ class VisualizationNode : public rclcpp::Node
 
     void OpenGlThread()
     {
-        PointCloud::Ptr cloud;
+        //PointCloud::Ptr cloud;
+        PointCloudMsg::SharedPtr cloud;
         OdometryMsg::SharedPtr odom;
         size_t frameId = 0;
         m_pose = Helpers::lookAt({0, 0, 0}, {1, 0, 0}, {0, 1, 0});
@@ -175,12 +170,13 @@ class VisualizationNode : public rclcpp::Node
 
 
             checkGLError((boost::format("OpenGL FRAME %d status: ") % frameId).str());
+            std::cout << std::endl;
 
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             update(window);
 
-            if (bool(cloud)  && (!cloud->empty()))
+            if (bool(cloud) && (cloud->width * cloud->height > 0))
             {
                 if(bool(odom))
                 {
@@ -198,24 +194,27 @@ class VisualizationNode : public rclcpp::Node
                     glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
                 }
 
+                const std::size_t length = cloud->width * cloud->height;
+                const std::size_t stride = cloud->point_step;
+                const float* data = (float*)(&cloud->data[0]);
+                const unsigned char* rgb = (unsigned char*)(&data[4]);
+
+                std::cout << " length=" << length << "; stride=" << stride << "; overall size=" << cloud->data.size();
+                std::cout << " (" << data[0] << "," << data[1] << "," << data[2] << "," << data[3] << ");";
+                std::cout << " RGB:(" << int(rgb[0]) << "," << int(rgb[1]) << "," << int(rgb[2])  << ")" << std::endl;
+
                 glUseProgram(mainProgID);
                 glEnableVertexAttribArray(0);
+                glEnableVertexAttribArray(1);
                 glBindBuffer(GL_ARRAY_BUFFER, cloudBufferID);
 
-                float* data = (float*)(&cloud->points[0]);
+                glBufferData(GL_ARRAY_BUFFER, length * stride, data, GL_DYNAMIC_DRAW);
 
+                glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride,  (GLvoid*)(4 * sizeof(GL_FLOAT)));
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
 
-                std::cout << " size=" << cloud->size();
-                std::cout << " (" << data[0] << "," << data[1] << "," << data[2] << "," << data[3] << ")" << std::endl;
-
-                glBufferData(
-                    GL_ARRAY_BUFFER, cloud->size() * sizeof(Point), &cloud->points[0], GL_DYNAMIC_DRAW);
-
-
-                glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Point), nullptr);
-                glVertexAttribIPointer(1, 4, GL_BYTE, sizeof(Point), (void*)(sizeof(float)*4));
-
-                glDrawArrays(GL_POINTS, 0, GLsizei(cloud->size()));
+                glDrawArrays(GL_POINTS, 0, GLsizei(length));
+                glDisableVertexAttribArray(1);
                 glDisableVertexAttribArray(0);
             }
             else
@@ -262,13 +261,9 @@ class VisualizationNode : public rclcpp::Node
             const float horizontal = m_rotationSpeed * (screen_width / 2.f - float(xpos));
             const float vertical = m_rotationSpeed * (screen_height / 2.f - float(ypos));
 
-            Eigen::AngleAxisf rollAngle(-horizontal, Eigen::Vector3f::UnitY());
+            Eigen::AngleAxisf rollAngle(horizontal, Eigen::Vector3f::UnitY());
             Eigen::AngleAxisf pitchAngle(-vertical, Eigen::Vector3f::UnitX());
 
-            //Eigen::Quaternion<float> q = rollAngle * pitchAngle;
-            //Eigen::Matrix4f rotation = Eigen::Matrix4f::Identity();
-            //rotation.block(0, 0, 3, 3) = q.matrix();
-            //m_pose = rotation * m_pose;
             m_pose.prerotate(rollAngle);
             m_pose.prerotate(pitchAngle);
         }
@@ -309,13 +304,7 @@ class VisualizationNode : public rclcpp::Node
             z = -deltaTime * m_travelSpeed;
         }
 
-//        Eigen::Matrix4f translaton = Eigen::Matrix4f::Identity();
-//        translaton(0, 3) = -y;
-//        translaton(1, 3) = -z;
-//        translaton(2, 3) = x;
-//        m_pose = translaton * m_pose;
-
-        m_pose.pretranslate(Eigen::Vector3f({y, z, x}));
+        m_pose.pretranslate(Eigen::Vector3f({-y, z, -x}));
 
         // For the next frame, the "last time" will be "now"
         m_lastTime = currentTime;
