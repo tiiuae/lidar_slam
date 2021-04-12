@@ -34,12 +34,15 @@ find_package(nav_msgs REQUIRED)
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(OpenMP REQUIRED)
 
+find_package(OpenGL COMPONENTS OpenGL)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLFW glfw3)
 
-include_directories(${PCL_INCLUDE_DIRS})
-include_directories(
-        include
-        "/usr/include/suitesparse" # dirty hack, needs to be fixed
-)
+
+include_directories(SYSTEM ${PCL_INCLUDE_DIRS})
+include_directories(SYSTEM "/usr/include/suitesparse") # dirty hack, needs to be fixed by proper find_package
+include_directories(include)
+
 
 add_definitions(${PCL_DEFINITIONS})
 
@@ -57,7 +60,12 @@ add_executable(lidar_slam_node src/lidar_slam_node.cpp )
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
 target_link_libraries(lidar_slam_node lidar_slam)
 
-
+if(GLFW_FOUND AND OPENGL_FOUND)
+    include_directories(SYSTEM ${GLFW_INCLUDE_DIRS})
+    add_executable(visualization_node src/visualization_node.cpp src/glad.c)
+    ament_target_dependencies(visualization_node rclcpp sensor_msgs nav_msgs )
+    target_link_libraries(visualization_node ${OPENGL_LIBRARIES} ${GLFW_STATIC_LIBRARIES} ${PCL_LIBRARIES})
+endif()
 
 if (BUILD_TESTING)
     enable_testing()

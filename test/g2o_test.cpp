@@ -46,13 +46,13 @@ class G2OTest : public ::testing::Test
 /// => after optimization vertex1 shall go to origin
 TEST_F(G2OTest, BasicTest)
 {
-    lidar_slam::CloudVertexSE3* vertex0 = new lidar_slam::CloudVertexSE3();
+    VertexSE3* vertex0 = new VertexSE3();
     vertex0->setId(0);
     vertex0->setToOrigin();
     vertex0->setFixed(true);
     optimizer_.addVertex(vertex0);
 
-    lidar_slam::CloudVertexSE3* vertex1 = new lidar_slam::CloudVertexSE3();
+    VertexSE3* vertex1 = new VertexSE3();
     vertex1->setId(1);
     g2o::Isometry3 p2 = g2o::Isometry3::Identity();
     p2.translation() << 3., 5., 7.;
@@ -87,13 +87,13 @@ TEST_F(G2OTest, BasicTest)
 /// Additionally we simulate our SLAM behaviour, when one vertex is not yet added to graph all the time
 TEST_F(G2OTest, RealSlamLikeTest)
 {
-    lidar_slam::CloudVertexSE3* vertex0 = new lidar_slam::CloudVertexSE3();
+    VertexSE3* vertex0 = new VertexSE3();
     vertex0->setId(0);
     vertex0->setToOrigin();
     vertex0->setFixed(true);
     vertex0->setMarginalized(false);
 
-    lidar_slam::CloudVertexSE3* vertex1 = new lidar_slam::CloudVertexSE3();
+    VertexSE3* vertex1 = new VertexSE3();
     vertex1->setId(1);
     g2o::Isometry3 p1 = g2o::Isometry3::Identity();
     p1.translation() << 11., 17., 23.;
@@ -122,7 +122,7 @@ TEST_F(G2OTest, RealSlamLikeTest)
         optimizer_.optimize(10);
     }
 
-    lidar_slam::CloudVertexSE3* vertex2 = new lidar_slam::CloudVertexSE3();
+    VertexSE3* vertex2 = new VertexSE3();
     vertex2->setId(2);
     vertex2->setFixed(false);
     vertex2->setEstimate(p1);
