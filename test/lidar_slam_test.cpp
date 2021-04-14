@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <lidar_slam/lidar_slam.h>
+#include <lidar_slam/helpers.h>
 #include <random>
 
 using namespace lidar_slam;
@@ -146,7 +147,7 @@ TEST_F(LidarSlamTest, BasicOdometryTest)
     EXPECT_EQ(0U, mapping_published);
     EXPECT_EQ(2U, latest_odometry_stamp_);
 
-    auto res = LidarSlam::GetAbsoluteShiftAngle(latest_odometry_.matrix());
+    auto res = Helpers::GetAbsoluteShiftAngle(latest_odometry_.matrix());
 
     EXPECT_NEAR(0.346, res.first, 0.01F);
     EXPECT_NEAR(0.F, res.second, 0.01F);
@@ -186,7 +187,7 @@ TEST_F(LidarSlamTest, BasicMappingTest)
     ASSERT_EQ(3U, odometry_published);
     EXPECT_EQ(3U, latest_odometry_stamp_);
 
-    auto res = LidarSlam::GetAbsoluteShiftAngle(latest_odometry_.matrix());
+    auto res = Helpers::GetAbsoluteShiftAngle(latest_odometry_.matrix());
     EXPECT_NEAR(0.F, res.second, 0.01F);
     EXPECT_NEAR(-shift*2, latest_odometry_(0,3), 0.01F);
     EXPECT_NEAR(-shift*2, latest_odometry_(1,3), 0.01F);
@@ -194,7 +195,7 @@ TEST_F(LidarSlamTest, BasicMappingTest)
 
     ASSERT_EQ(1U, mapping_published);
     EXPECT_EQ(2U, latest_mapping_stamp_);
-    auto res2 = LidarSlam::GetAbsoluteShiftAngle(latest_mapping_.matrix());
+    auto res2 = Helpers::GetAbsoluteShiftAngle(latest_mapping_.matrix());
     EXPECT_NEAR(0.F, res2.second, 0.01F);
     EXPECT_NEAR(0, latest_mapping_(0,3), 0.01F);
     EXPECT_NEAR(0, latest_mapping_(1,3), 0.01F);
@@ -236,7 +237,6 @@ TEST_F(LidarSlamTest, LoopClosuresTest)
     EXPECT_NO_THROW(slam_.AddPointCloud(cloud4));
     std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(600));
 
-
     slam_.Stop();
 
     ASSERT_EQ(4U, odometry_published);
@@ -244,7 +244,7 @@ TEST_F(LidarSlamTest, LoopClosuresTest)
 
     ASSERT_EQ(2U, mapping_published);
     EXPECT_EQ(3U, latest_mapping_stamp_);
-    auto res2 = LidarSlam::GetAbsoluteShiftAngle(latest_mapping_.matrix());
+    auto res2 = Helpers::GetAbsoluteShiftAngle(latest_mapping_.matrix());
     EXPECT_NEAR(0.F, res2.second, 0.01F);
     EXPECT_NEAR(0, latest_mapping_(0,3), 0.01F);
     EXPECT_NEAR(0, latest_mapping_(1,3), 0.01F);

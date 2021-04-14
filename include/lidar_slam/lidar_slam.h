@@ -1,11 +1,11 @@
-#include <boost/optional/optional.hpp>
-#include <fast_gicp/gicp/fast_vgicp.hpp>
-#include <g2o/core/sparse_optimizer.h>
+//#include <boost/optional/optional.hpp>
 #include <g2o/types/slam3d/edge_se3.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
+//#include <unordered_map>
 
 #ifndef FOG_SW_LIDAR_SLAM_H
 #define FOG_SW_LIDAR_SLAM_H
@@ -26,7 +26,7 @@ struct LidarSlamParameters
 {
     bool automatic_start = true;
     bool optimizer_verbose = false;
-    double gicp_resolution = 0.25;
+    double gicp_resolution = 1.0;
     double gicp_translation_noise = 0.05; // [meters]
     double gicp_rotation_noise = 0.002;  // [radians]
     std::size_t minimal_cloud_size = 20U;
@@ -34,20 +34,7 @@ struct LidarSlamParameters
     double new_node_after_rotation = 0.05; // [radians]
     int loop_closure_min_vertices = 5;
     int loop_closure_edge_rato = 2;
-
-
 };
-
-//class G2O_TYPES_SLAM3D_API CloudVertexSE3 : public g2o::VertexSE3
-//{
-//  public:
-//    using PointCloudPtr = pcl::PointCloud<pcl::PointXYZ>::Ptr;
-//    PointCloudPtr cloud{};
-//    //std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> covariances{};
-//    //std::shared_ptr<pcl::search::KdTree<pcl::PointXYZ>> kdtree{};
-//    CloudVertexSE3() : VertexSE3(){}
-//    CloudVertexSE3(PointCloudPtr init_cloud) : VertexSE3() {cloud = init_cloud;}
-//};
 
 /// Lidar-SLAM algorithm, for working with PointClouds
 class LidarSlam
@@ -80,9 +67,6 @@ class LidarSlam
     /// Use this function to add new (just arrived) point-cloud into the SLAM
     /// Each new cloud shall have later timestamp than previous
     void AddPointCloud(const PointCloudPtr& msg);
-
-    /// @return pair of translation and rotation misalignment
-    static std::pair<double, double> GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix);
 
   private:
 

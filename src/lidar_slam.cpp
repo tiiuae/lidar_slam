@@ -1,16 +1,18 @@
-#include <Eigen/Geometry>
-#include <g2o/core/block_solver.h>
-#include <g2o/core/optimization_algorithm_levenberg.h>
-#include <g2o/solvers/eigen/linear_solver_eigen.h>
-#include <g2o/types/slam3d/edge_se3.h>
-#include <lidar_slam/lidar_slam.h>
-#include <pcl/filters/voxel_grid.h>
 #include <chrono>
 #include <future>
 #include <random>
 #include <thread>
+#include <Eigen/Geometry>
+#include <lidar_slam/lidar_slam.h>
+#include <g2o/core/sparse_optimizer.h>
+#include <g2o/core/block_solver.h>
+#include <g2o/core/optimization_algorithm_levenberg.h>
+#include <g2o/solvers/eigen/linear_solver_eigen.h>
+#include <g2o/types/slam3d/edge_se3.h>
+#include <lidar_slam/helpers.h>
 
 // following includes come last
+#include <fast_gicp/gicp/fast_vgicp.hpp>
 #include <fast_gicp/gicp/impl/fast_gicp_impl.hpp>
 #include <fast_gicp/gicp/impl/fast_vgicp_impl.hpp>
 #include <fast_gicp/gicp/impl/lsq_registration_impl.hpp>
@@ -115,7 +117,7 @@ void LidarSlam::OdometryThread()
                 odometry_callback_(accumulated_odometry * isometry, latest_cloud_local->header.stamp);
             }
 
-            auto shiftangle = GetAbsoluteShiftAngle(result);
+            auto shiftangle = Helpers::GetAbsoluteShiftAngle(result);
 
             if (shiftangle.first > params_.new_node_min_translation || shiftangle.second > params_.new_node_after_rotation)
             {
@@ -422,18 +424,6 @@ void LidarSlam::AddPointCloud(const PointCloudPtr& msg)
 }
 
 
-std::pair<double, double> LidarSlam::GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix)
-{
-    const double dx = matrix(0, 3);
-    const double dy = matrix(1, 3);
-    const double dz = matrix(2, 3);
-    const double translation = std::sqrt(dx * dx + dy * dy + dz * dz);
 
-    const Eigen::Quaterniond angle(Eigen::Matrix3d(matrix.block(0, 0, 3, 3)));
-    const double rotation =
-        std::sqrt(angle.x() * angle.x() + angle.y() * angle.y() + angle.z() * angle.z()) * angle.w();
-
-    return std::make_pair(translation, rotation * 2.);
-}
 
 }  // namespace lidar_slam

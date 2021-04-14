@@ -1,5 +1,5 @@
-#include <lidar_slam/helpers.h>
 #include <lidar_slam/lidar_slam_node.h>
+#include <lidar_slam/ros_helpers.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp/rclcpp.hpp>
 //#include <tf2/convert.h>
@@ -20,7 +20,7 @@ LidarSlamNode::LidarSlamNode()
       tf_broadcaster_{}
 {
     declare_parameter<std::string>("cloud_topic", "/camera/depth/color/points");
-    declare_parameter<std::string>("gps_topic", "/camera/depth/color/points");
+    declare_parameter<std::string>("gps_topic", "/gpsfix");
     declare_parameter<std::string>("base_frame_id", "base_link");
     declare_parameter<std::string>("map_frame_id", "map");
     declare_parameter<std::string>("odom_frame_id", "odom");
@@ -37,13 +37,13 @@ LidarSlamNode::LidarSlamNode()
 
     RCLCPP_INFO(get_logger(), "LidarSlamNode cloud_topic = " + cloud_topic);
 
-    rclcpp::QoS qos(10);
+    rclcpp::QoS qos(5);
     qos = qos.best_effort();
     cloud_subscriber_ = create_subscription<PointCloudMsg>(
         cloud_topic, qos, std::bind(&LidarSlamNode::GrabPointCloud, this, std::placeholders::_1));
 
-    gps_subscriber_ = create_subscription<GpsMsg>(
-        gps_topic, qos, std::bind(&LidarSlamNode::GrabGpsMsg, this, std::placeholders::_1));
+    gps_subscriber_ =
+        create_subscription<GpsMsg>(gps_topic, qos, std::bind(&LidarSlamNode::GrabGpsMsg, this, std::placeholders::_1));
 
     odometry_publisher_ = create_publisher<OdometryMsg>("/odom", qos);
 
@@ -54,7 +54,6 @@ LidarSlamNode::LidarSlamNode()
 
     RCLCPP_INFO(get_logger(), "LidarSlamNode successfully initialized");
 }
-
 
 void LidarSlamNode::PublishOdometry(const Eigen::Isometry3d sensor_odometry, const std::uint64_t stamp)
 {
@@ -68,15 +67,15 @@ void LidarSlamNode::PublishOdometry(const Eigen::Isometry3d sensor_odometry, con
     //        const Eigen::Isometry3d odometry_transform = sensor2base * sensor_odometry * base2sensor;
     //
     //        TransformStamped msg = Convert(odometry_transform, stamp);
-    TransformStamped msg = Helpers::Convert(sensor_odometry, stamp);
+    TransformStamped msg = RosHelpers::Convert(sensor_odometry, stamp);
     msg.header.frame_id = odom_frame_;
     msg.child_frame_id = base_frame_;
     tf_broadcaster_->sendTransform(msg);
 
     OdometryMsg omsg;
     omsg.header.frame_id = odom_frame_;
-    omsg.header.stamp.sec = stamp / Helpers::NanoFactor;
-    omsg.header.stamp.nanosec = stamp % Helpers::NanoFactor;
+    omsg.header.stamp.sec = stamp / RosHelpers::NanoFactor;
+    omsg.header.stamp.nanosec = stamp % RosHelpers::NanoFactor;
     omsg.child_frame_id = base_frame_;
 
     // because the input transform gives us a pose of the odom frame from the latest frame point of view,
@@ -89,29 +88,29 @@ void LidarSlamNode::PublishOdometry(const Eigen::Isometry3d sensor_odometry, con
     odometry_publisher_->publish(omsg);
 
     const auto r = msg.transform.rotation;
+    RCLCPP_INFO(
+        get_logger(),
+        "Odometry translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," + std::to_string(t.z) + "]");
     RCLCPP_INFO(get_logger(),
-                "Odometry translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," +
-                std::to_string(t.z) + "]");
-    RCLCPP_INFO(get_logger(),
-                "Odometry rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," +
-                std::to_string(r.z) + "," + std::to_string(r.w) + "]");
+                "Odometry rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.z) +
+                    "," + std::to_string(r.w) + "]");
 }
 
 void LidarSlamNode::PublishMap(const Eigen::Isometry3d transform, const std::uint64_t stamp)
 {
-    TransformStamped msg = Helpers::Convert(transform, stamp);
+    TransformStamped msg = RosHelpers::Convert(transform, stamp);
     msg.header.frame_id = map_frame_;
     msg.child_frame_id = odom_frame_;
     tf_broadcaster_->sendTransform(msg);
 
     const auto r = msg.transform.rotation;
     const auto t = msg.transform.translation;
+    RCLCPP_INFO(
+        get_logger(),
+        "Mapping translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," + std::to_string(t.z) + "]");
     RCLCPP_INFO(get_logger(),
-                "Mapping translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," +
-                std::to_string(t.z) + "]");
-    RCLCPP_INFO(get_logger(),
-                "Mapping rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," +
-                std::to_string(r.z) + "," + std::to_string(r.w) + "]");
+                "Mapping rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.z) +
+                    "," + std::to_string(r.w) + "]");
 }
 
 void LidarSlamNode::GrabPointCloud(const PointCloudMsg::SharedPtr msg)
@@ -120,13 +119,12 @@ void LidarSlamNode::GrabPointCloud(const PointCloudMsg::SharedPtr msg)
     pcl::moveFromROSMsg<Point>(*msg, *cloud);
     const std::int32_t sec = msg->header.stamp.sec;
     const std::uint32_t nanosec = msg->header.stamp.nanosec;
-    cloud->header.stamp = std::uint64_t(sec) * Helpers::NanoFactor + std::uint64_t(nanosec);
-    RCLCPP_INFO(get_logger(), "Recieved cloud at time " + std::to_string(sec) + "." + std::to_string(nanosec));
+    cloud->header.stamp = std::uint64_t(sec) * RosHelpers::NanoFactor + std::uint64_t(nanosec);
+    // RCLCPP_INFO(get_logger(), "Recieved cloud at time " + std::to_string(sec) + "." + std::to_string(nanosec));
     slam_.AddPointCloud(cloud);
 }
 
 void LidarSlamNode::GrabGpsMsg(const GpsMsg::SharedPtr msg) {}
-
 
 int main(int argc, char** argv)
 {

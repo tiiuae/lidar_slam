@@ -43,7 +43,6 @@ include_directories(SYSTEM ${PCL_INCLUDE_DIRS})
 include_directories(SYSTEM "/usr/include/suitesparse") # dirty hack, needs to be fixed by proper find_package
 include_directories(include)
 
-
 add_definitions(${PCL_DEFINITIONS})
 
 option(USE_SLAM_LOGGING False)
@@ -59,12 +58,14 @@ target_link_libraries(lidar_slam g2o::core g2o::types_icp g2o::types_sba g2o::so
 add_executable(lidar_slam_node src/lidar_slam_node.cpp )
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
 target_link_libraries(lidar_slam_node lidar_slam)
+install(TARGETS lidar_slam_node DESTINATION lib/${PROJECT_NAME} )
 
 if(GLFW_FOUND AND OPENGL_FOUND)
     include_directories(SYSTEM ${GLFW_INCLUDE_DIRS})
     add_executable(visualization_node src/visualization_node.cpp src/glad.c)
-    ament_target_dependencies(visualization_node rclcpp sensor_msgs nav_msgs )
+    ament_target_dependencies(visualization_node rclcpp sensor_msgs nav_msgs tf2_ros)
     target_link_libraries(visualization_node ${OPENGL_LIBRARIES} ${GLFW_STATIC_LIBRARIES} ${PCL_LIBRARIES})
+    install(TARGETS visualization_node DESTINATION lib/${PROJECT_NAME} )
 endif()
 
 if (BUILD_TESTING)

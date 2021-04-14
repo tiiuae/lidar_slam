@@ -3,57 +3,16 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-#include <geometry_msgs/msg/point.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
 namespace lidar_slam
 {
 
 class Helpers
 {
   public:
-    using TransformStamped = geometry_msgs::msg::TransformStamped;
-    static constexpr std::uint64_t NanoFactor = 1000000000UL;
-
-    static TransformStamped Convert(const Eigen::Isometry3d& transform, const std::uint64_t stamp)
-    {
-        builtin_interfaces::msg::Time stamp2;
-        Eigen::Matrix3d rot = transform.matrix().block(0, 0, 3, 3);
-        Eigen::Quaterniond q(rot);
-
-        TransformStamped msg;
-        msg.transform.translation.x = transform(0, 3);
-        msg.transform.translation.y = transform(1, 3);
-        msg.transform.translation.z = transform(2, 3);
-        msg.transform.rotation.x = q.x();
-        msg.transform.rotation.y = q.y();
-        msg.transform.rotation.z = q.z();
-        msg.transform.rotation.w = q.w();
-        msg.header.stamp.sec = stamp / NanoFactor;
-        msg.header.stamp.nanosec = stamp % NanoFactor;
-
-        return msg;
-    }
-
-    static Eigen::Isometry3d Convert(const TransformStamped& msg)
-    {
-        Eigen::Matrix4d matrix = Eigen::Matrix4d::Identity();
-        const auto qm = msg.transform.rotation;
-        Eigen::Quaterniond q(qm.x, qm.y, qm.z, qm.w);
-        matrix.block(0, 0, 3, 3) = q.matrix();
-        matrix(0, 3) = msg.transform.translation.x;
-        matrix(1, 3) = msg.transform.translation.y;
-        matrix(2, 3) = msg.transform.translation.z;
-        return Eigen::Isometry3d(matrix);
-    }
-
-
-    template<typename type=float>
-    static Eigen::Matrix<type, 4, 4> lookAt
-        (
-            Eigen::Matrix<type, 3, 1> const &eye,
-            Eigen::Matrix<type, 3, 1> const &center,
-            Eigen::Matrix<type, 3, 1> const &up
-        )
+    template <typename type = float>
+    static Eigen::Matrix<type, 4, 4> lookAt(Eigen::Matrix<type, 3, 1> const& eye,
+                                            Eigen::Matrix<type, 3, 1> const& center,
+                                            Eigen::Matrix<type, 3, 1> const& up)
     {
         typedef Eigen::Matrix<type, 4, 4> Matrix4;
         typedef Eigen::Matrix<type, 3, 1> Vector3;
@@ -64,27 +23,48 @@ class Helpers
         u = s.cross(f);
 
         Matrix4 res;
-        res << s.x(), s.y(), s.z(), -s.dot(eye),
-            u.x(), u.y(), u.z(), -u.dot(eye),
-            -f.x(), -f.y(), -f.z(), f.dot(eye),
+        res << s.x(), s.y(), s.z(), -s.dot(eye), u.x(), u.y(), u.z(), -u.dot(eye), -f.x(), -f.y(), -f.z(), f.dot(eye),
             0, 0, 0, 1;
 
         return res;
     }
 
-    static Eigen::Quaterniond Convert(const geometry_msgs::msg::Quaternion& quat)
+    /// @brief Returns a perspective transformation matrix like the one from gluPerspective
+    /// @see http://www.opengl.org/sdk/docs/man2/xhtml/gluPerspective.xml
+    /// @see glm::perspective
+    template <typename Scalar = float>
+    static Eigen::Matrix<Scalar, 4, 4> perspective(Scalar fovy, Scalar aspect, Scalar zNear, Scalar zFar)
     {
-        return Eigen::Quaterniond(quat.x, quat.y, quat.z, quat.w);
+        Eigen::Transform<Scalar, 3, Eigen::Projective> tr;
+        tr.matrix().setZero();
+        assert(aspect > 0);
+        assert(zFar > zNear);
+        assert(zNear > 0);
+        Scalar radf = M_PI * fovy / 180.0;
+        Scalar tan_half_fovy = std::tan(radf / 2.0);
+        tr(0, 0) = 1.0 / (aspect * tan_half_fovy);
+        tr(1, 1) = 1.0 / (tan_half_fovy);
+        tr(2, 2) = -(zFar + zNear) / (zFar - zNear);
+        tr(3, 2) = -1.0;
+        tr(2, 3) = -(2.0 * zFar * zNear) / (zFar - zNear);
+        return tr.matrix();
     }
 
-    static Eigen::Vector3d Convert(const geometry_msgs::msg::Point& point)
+    /// @return pair of translation and rotation misalignment
+    static std::pair<double, double> GetAbsoluteShiftAngle(const Eigen::Matrix4d& matrix)
     {
-        return Eigen::Vector3d(point.x, point.y, point.z);
+        const double dx = matrix(0, 3);
+        const double dy = matrix(1, 3);
+        const double dz = matrix(2, 3);
+        const double translation = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        const Eigen::Quaterniond angle(Eigen::Matrix3d(matrix.block(0, 0, 3, 3)));
+        const double rotation =
+            std::sqrt(angle.x() * angle.x() + angle.y() * angle.y() + angle.z() * angle.z()) * angle.w();
+
+        return std::make_pair(translation, rotation * 2.);
     }
-
-
 };
-
 
 } //namespace lidar_slam
 

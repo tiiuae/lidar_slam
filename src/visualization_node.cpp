@@ -1,8 +1,10 @@
 // clang-format off
 #include <lidar_slam/glad.h> // this include must go first
 // clang-format on
+#include <array>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <lidar_slam/ros_helpers.h>
 #include <lidar_slam/helpers.h>
 #include <GLFW/glfw3.h>
 #include <boost/format.hpp>
@@ -11,8 +13,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <pcl_conversions/pcl_conversions.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
-std::string vertex =
+std::string main_vertex =
     "#version 120\n\r"
     "attribute vec3 RGB;\n\r"
     "attribute vec3 XYZ;\n\r"
@@ -23,21 +27,19 @@ std::string vertex =
     "{\n\r"
     "    rgb = RGB;\n\r"
     "    vec4 xyz1 = vec4(XYZ.x, XYZ.y, XYZ.z, 1.0);\n\r"
-    "    vec4 uvz = K * C1 * xyz1;\n\r"
-    "    vec2 uv = vec2(uvz.x / uvz.z, uvz.y / uvz.z);\n\r"
-    "    float u = 2.0 * uv.x / 1024.0 - 1.0;\n\r"
-    "    float v = 1.0 - 2.0 * uv.y / 768.0;\n\r"
-    "    gl_Position = vec4(u, v, 0.0, 1.0);\n\r"
+    "    gl_Position = K * C1 * xyz1;\n\r"
     "    gl_PointSize = 3.0;\n\r"
     "}\n\r";
 
-std::string frag =
+std::string main_frag =
     "#version 120\n\r"
     "varying vec3 rgb;\n\r"
     "void main()\n\r"
     "{\n\r"
     "    gl_FragColor = vec4(rgb.b, rgb.g, rgb.r, 1.0);\n\r"
     "}\n\r";
+
+
 using namespace lidar_slam;
 
 class VisualizationNode : public rclcpp::Node
@@ -49,18 +51,47 @@ class VisualizationNode : public rclcpp::Node
     using Point = pcl::PointXYZRGB;
     using PointCloud = pcl::PointCloud<Point>;
 
-    VisualizationNode() : Node("visualization_node"), m_travelSpeed(0.5), m_rotationSpeed(0.001)
+    VisualizationNode()
+        : Node("visualization_node"),
+          cloud_subscriber_{},
+          base_frame_{},
+          map_frame_{},
+          odom_frame_{},
+          rotation_factor_(0.001),
+          travel_factor_(1),
+          clock_(RCL_SYSTEM_TIME),
+          tf_buffer_(std::make_shared<rclcpp::Clock>(clock_)),
+          tf_listener_(tf_buffer_, true)
     {
         declare_parameter<std::string>("cloud_topic", "/camera/depth/color/points");
+        declare_parameter<std::string>("base_frame_id", "base_link");
+        declare_parameter<std::string>("map_frame_id", "map");
+        declare_parameter<std::string>("odom_frame_id", "odom");
+        declare_parameter<std::string>("sensor_frame_id", "camera_depth_optical_frame");
+        declare_parameter<int>("screen_width", 1024);
+        declare_parameter<int>("screen_height", 768);
 
         const std::string cloud_topic = get_parameter("cloud_topic").as_string();
-        cloud_subscriber_ = create_subscription<PointCloudMsg>(
-            cloud_topic, 10, std::bind(&VisualizationNode::GrabPointCloud, this, std::placeholders::_1));
+        base_frame_ = get_parameter("base_frame_id").as_string();
+        map_frame_ = get_parameter("map_frame_id").as_string();
+        odom_frame_ = get_parameter("odom_frame_id").as_string();
+        sensor_frame_ = get_parameter("sensor_frame_id").as_string();
+        screen_width_ = get_parameter("screen_width").as_int();
+        screen_height_ = get_parameter("screen_height").as_int();
 
-        odometry_subscriber_ = create_subscription<OdometryMsg>("/odom", 10, std::bind(&VisualizationNode::GrabOdometry, this, std::placeholders::_1));
+        rclcpp::QoS qos(5);
+        qos = qos.best_effort();
+
+        cloud_subscriber_ = create_subscription<PointCloudMsg>(
+            cloud_topic, qos, std::bind(&VisualizationNode::GrabPointCloud, this, std::placeholders::_1));
+
+        odometry_subscriber_ = create_subscription<OdometryMsg>(
+            std::string("/odom"), qos, std::bind(&VisualizationNode::GrabOdometry, this, std::placeholders::_1));
 
         opengl_thread_running_ = true;
         opengl_thread_ = std::thread(&VisualizationNode::OpenGlThread, this);
+
+        RCLCPP_INFO(get_logger(), "VisualizationNode successfully initialized");
     }
 
     ~VisualizationNode()
@@ -79,20 +110,26 @@ class VisualizationNode : public rclcpp::Node
   private:
     rclcpp::Subscription<PointCloudMsg>::SharedPtr cloud_subscriber_;
     rclcpp::Subscription<OdometryMsg>::SharedPtr odometry_subscriber_;
+    std::string base_frame_, map_frame_, odom_frame_, sensor_frame_;
+    rclcpp::Clock clock_;
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
 
-    //PointCloud::Ptr latest_cloud_;
     PointCloudMsg::SharedPtr latest_cloud_;
     std::mutex latest_cloud_mutex_;
-    OdometryMsg::SharedPtr latest_odometry_;
+    // OdometryMsg::SharedPtr latest_odometry_;
+    std::vector<OdometryMsg::SharedPtr> odometries_;
     std::mutex latest_odometry_mutex_;
 
     std::thread opengl_thread_;
     std::atomic<bool> opengl_thread_running_;
-    float m_travelSpeed;
-    float m_rotationSpeed;
+    float travel_factor_;
+    float rotation_factor_;
+    int screen_width_;
+    int screen_height_;
 
     Eigen::Isometry3f m_pose;
-    double m_lastTime = glfwGetTime();
+    double last_time_ = glfwGetTime();
 
     void GrabPointCloud(const PointCloudMsg::SharedPtr msg)
     {
@@ -102,25 +139,37 @@ class VisualizationNode : public rclcpp::Node
 
     void GrabOdometry(const OdometryMsg::SharedPtr msg)
     {
-        std::cout << "Odometry Arrived: stamp=" << msg->header.stamp.sec << std::endl;
+        RCLCPP_INFO(get_logger(), "Odometry Arrived: " + std::to_string(msg->header.stamp.sec));
+        //std::cout << "Odometry Arrived: stamp=" << msg->header.stamp.sec << std::endl;
         std::lock_guard<std::mutex> lock(latest_odometry_mutex_);
-        latest_odometry_ = msg;
+        odometries_.emplace_back(msg);
+        // latest_odometry_ = msg;
     }
 
     void OpenGlThread()
     {
-        //PointCloud::Ptr cloud;
+        enum class GlBufferId : unsigned
+        {
+            Cloud,
+            CoordLines,
+            ShortLines,
+            CoordColors,
+            GrayColors,
+            Size // Keep that one the last
+        };
+
+#define GLBUFFSIZE unsigned(GlBufferId::Size)
+
         PointCloudMsg::SharedPtr cloud;
         OdometryMsg::SharedPtr odom;
         size_t frameId = 0;
-        m_pose = Helpers::lookAt({0, 0, 0}, {1, 0, 0}, {0, 1, 0});
 
-        // "Intrinsics"
-        Eigen::Matrix4f intrinsic;
-        intrinsic.row(0) << 600, 0, 768, 0;
-        intrinsic.row(1) << 0, 600, 384, 0;
-        intrinsic.row(2) << 0, 0, 1, 0;
-        intrinsic.row(3) << 0, 0, 0, 1;
+        // Camera-view matrix
+        m_pose = Helpers::lookAt({0, 0, -1}, {0, 0, 0}, {0, -1, 0});
+
+        // Projection matrix (aka "intrinsics")
+        const float aspect = float(screen_width_) / float(screen_height_);
+        Eigen::Matrix4f intrinsic = Helpers::perspective(50.F, aspect, 0.01F, 10.F);
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -129,7 +178,7 @@ class VisualizationNode : public rclcpp::Node
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-        GLFWwindow* window = openWindow(1024, 768);
+        GLFWwindow* window = OpenGLWindow(screen_width_, screen_height_);
         checkGLError("Setting OpenGL Window");
         // Set the screen with dark-blue, so we know app has started
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -137,91 +186,163 @@ class VisualizationNode : public rclcpp::Node
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glEnable(GL_PROGRAM_POINT_SIZE);
+        glPointSize(3);
+        glLineWidth(3);
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
 
-        // Main camera-matrix
-        m_pose = Eigen::Isometry3f::Identity();
+        GLuint VertexArrayID;
+        glGenVertexArrays(1, &VertexArrayID);
+        glBindVertexArray(VertexArrayID);
 
-        const Eigen::Matrix4f identity = Eigen::Matrix4f::Identity();
-        const GLuint mainProgID = loadProgramFromCode(vertex, frag, "");
+        const GLuint mainProgID = LoadProgramFromCode(main_vertex, main_frag, "");
         checkGLError("Loading Main Shader Program");
         glUseProgram(mainProgID);
-        glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, identity.data());
+        glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, m_pose.data());
         glUniformMatrix4fv(glGetUniformLocation(mainProgID, "K"), 1, GL_FALSE, intrinsic.data());
 
         checkGLError("Setting Buffers and Textures");
 
-        GLuint cloudBufferID;
-        glGenBuffers(1, &cloudBufferID);
+        std::array<GLuint, GLBUFFSIZE> gl_buffer_ids{};
+        glGenBuffers(GLBUFFSIZE, &gl_buffer_ids[0]);
+
+#define GLBUFFID(Name) gl_buffer_ids[unsigned(GlBufferId::Name)]
+
+        const std::vector<float> coord_lines{0, 0, 0,   0.2, 0, 0,    0, 0, 0,    0, 0.2,0,   0, 0, 0,   0, 0, 0.2};
+        const std::vector<float> short_lines{0, 0, 0,   0.1, 0, 0,    0, 0, 0,    0, 0.1,0,   0, 0, 0,   0, 0, 0.1};
+        const std::vector<float> coord_colors{0, 0, 1,  0, 0, 1,      0, 1, 0,    0,1,0,      1, 0, 0,   1, 0, 0};
+        const std::vector<float> gray_colors{0.5, 0.5, 0.9,  0.5, 0.5, 0.9,      0.5, 0.9, 0.5,    0.5,0.9,0.5,      0.9, 0.5, 0.5,   0.9, 0.5, 0.5};
+        std::vector<Eigen::Matrix4f> trajectory;
+        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
+        glBufferData(GL_ARRAY_BUFFER, coord_lines.size() * sizeof(float), &coord_lines[0], GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(ShortLines));
+        glBufferData(GL_ARRAY_BUFFER, short_lines.size() * sizeof(float), &short_lines[0], GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordColors));
+        glBufferData(GL_ARRAY_BUFFER, coord_colors.size() * sizeof(float), &coord_colors[0], GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(GrayColors));
+        glBufferData(GL_ARRAY_BUFFER, gray_colors.size() * sizeof(float), &gray_colors[0], GL_STATIC_DRAW);
 
         while (opengl_thread_running_ && !glfwWindowShouldClose(window))
-        {  // && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS)
+        {
+            glClear(GL_COLOR_BUFFER_BIT);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            update(window);
+
             {
                 std::lock_guard<std::mutex> lock(latest_cloud_mutex_);
                 cloud = latest_cloud_;
             }
+
             {
                 std::lock_guard<std::mutex> lock(latest_odometry_mutex_);
-                odom = latest_odometry_;
+                if (!odometries_.empty())
+                {
+                    odom = odometries_[odometries_.size()-1];
+                    // odom = latest_odometry_;
+                }
             }
 
-
-            checkGLError((boost::format("OpenGL FRAME %d status: ") % frameId).str());
-            std::cout << std::endl;
-
-
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            update(window);
+//            checkGLError((boost::format("OpenGL FRAME %d status: ") % frameId).str());
+//            std::cout << std::endl;
 
             if (bool(cloud) && (cloud->width * cloud->height > 0))
             {
-                if(bool(odom))
-                {
-                    Eigen::Isometry3d odometry{};
-                    odometry.prerotate(Helpers::Convert(odom->pose.pose.orientation));
-                    odometry.pretranslate(Helpers::Convert(odom->pose.pose.position));
-
-                    const Eigen::Matrix4f odom_inv = odometry.inverse().matrix().cast<float>();
-                    const Eigen::Matrix4f pose = m_pose * odom_inv;
-                    glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
-                }
-                else
-                {
-                    const Eigen::Matrix4f pose = m_pose.matrix();
-                    glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
-                }
-
                 const std::size_t length = cloud->width * cloud->height;
                 const std::size_t stride = cloud->point_step;
                 const float* data = (float*)(&cloud->data[0]);
-                const unsigned char* rgb = (unsigned char*)(&data[4]);
+//                const unsigned char* rgb = (unsigned char*)(&data[4]);
+//                std::cout << " length=" << length << "; stride=" << stride << "; overall size=" << cloud->data.size();
+//                std::cout << " (" << data[0] << "," << data[1] << "," << data[2] << "," << data[3] << ");";
+//                std::cout << " RGB:(" << int(rgb[0]) << "," << int(rgb[1]) << "," << int(rgb[2]) << ")" << std::endl;
 
-                std::cout << " length=" << length << "; stride=" << stride << "; overall size=" << cloud->data.size();
-                std::cout << " (" << data[0] << "," << data[1] << "," << data[2] << "," << data[3] << ");";
-                std::cout << " RGB:(" << int(rgb[0]) << "," << int(rgb[1]) << "," << int(rgb[2])  << ")" << std::endl;
+//                try
+//                {
+//                    geometry_msgs::msg::TransformStamped sensor2map =
+//                        tf_buffer_.lookupTransform(map_frame_, sensor_frame_, clock_.now(), tf2::durationFromSec(10.0));
+//
+//                    Eigen::Isometry3f odometry{};
+//                    odometry.prerotate(RosHelpers::Convert(sensor2map.transform.rotation).cast<float>());
+//                    odometry.pretranslate(RosHelpers::Convert(sensor2map.transform.translation).cast<float>());
+//                    const Eigen::Matrix4f pose = m_pose * odometry.matrix();
+//                    glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+//                }
+//                catch (...)
 
+                if (bool(odom))
+                {
+                    Eigen::Isometry3d odometry = Eigen::Isometry3d::Identity();
+                    odometry.prerotate(RosHelpers::Convert(odom->pose.pose.orientation));
+                    odometry.pretranslate(RosHelpers::Convert(odom->pose.pose.position));
+
+                    const Eigen::Matrix4f odom_matrix = odometry.matrix().cast<float>();
+                    //std::cout << "Odometry matrix:" << std::endl << odom_matrix << std::endl;
+                    const Eigen::Matrix4f pose = m_pose * odom_matrix;
+                    glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+
+                    // draw the sensor origin
+                    glLineWidth(4);
+                    glUseProgram(mainProgID);
+                    glEnableVertexAttribArray(0);
+                    glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordColors));
+                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+                    glEnableVertexAttribArray(1);
+                    glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
+                    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+                    glDrawArrays(GL_LINES, 0, 6);
+                    glDisableVertexAttribArray(1);
+                    glDisableVertexAttribArray(0);
+
+                    // draw trajectory
+                    for(auto odom_i : odometries_)
+                    {
+                        Eigen::Isometry3d odometry_i = Eigen::Isometry3d::Identity();
+                        odometry_i.prerotate(RosHelpers::Convert(odom_i->pose.pose.orientation));
+                        odometry_i.pretranslate(RosHelpers::Convert(odom_i->pose.pose.position));
+
+                        const Eigen::Matrix4f odom_matrix_i = odometry_i.matrix().cast<float>();
+                        const Eigen::Matrix4f pose_i = m_pose * odom_matrix_i;
+                        glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose_i.data());
+
+                        // draw the sensor origin
+                        glLineWidth(4);
+                        glUseProgram(mainProgID);
+                        glEnableVertexAttribArray(0);
+                        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(GrayColors));
+                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+                        glEnableVertexAttribArray(1);
+                        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(ShortLines));
+                        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+                        glDrawArrays(GL_LINES, 0, 6);
+                        glDisableVertexAttribArray(1);
+                        glDisableVertexAttribArray(0);
+                    }
+
+                }
+                else
+                {
+                    Eigen::Matrix4f pose = m_pose.matrix();
+                    glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+                }
+
+                // draw all the points
                 glUseProgram(mainProgID);
                 glEnableVertexAttribArray(0);
-                glEnableVertexAttribArray(1);
-                glBindBuffer(GL_ARRAY_BUFFER, cloudBufferID);
 
+                glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(Cloud));
                 glBufferData(GL_ARRAY_BUFFER, length * stride, data, GL_DYNAMIC_DRAW);
+                glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride, (GLvoid*)(4 * sizeof(float)));
 
-                glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride,  (GLvoid*)(4 * sizeof(GL_FLOAT)));
+                glEnableVertexAttribArray(1);
                 glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
-
                 glDrawArrays(GL_POINTS, 0, GLsizei(length));
                 glDisableVertexAttribArray(1);
                 glDisableVertexAttribArray(0);
             }
-            else
-            {
-                std::cout << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }
+
 
             glfwSwapBuffers(window);
             glfwPollEvents();
@@ -229,8 +350,8 @@ class VisualizationNode : public rclcpp::Node
         }
 
         glDeleteProgram(mainProgID);
-        glDeleteBuffers(1, &cloudBufferID);
-
+        glDeleteBuffers(GLBUFFSIZE, &gl_buffer_ids[0]);
+        glDeleteVertexArrays(1, &VertexArrayID);
 
         glfwTerminate();
     }
@@ -240,11 +361,11 @@ class VisualizationNode : public rclcpp::Node
         // read all OpenGL events, happened just prior to call
         glfwPollEvents();
 
-        int screen_width, screen_height;
-        glfwGetWindowSize(window, &screen_width, &screen_height);
+//        int screen_width, screen_height;
+//        glfwGetWindowSize(window, &screen_width, &screen_height);
 
-        double currentTime = glfwGetTime();
-        auto deltaTime = float(currentTime - m_lastTime);
+        double current_time = glfwGetTime();
+        auto delta_time = float(current_time - last_time_);
 
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS)
         {
@@ -253,15 +374,15 @@ class VisualizationNode : public rclcpp::Node
             glfwGetCursorPos(window, &xpos, &ypos);
 
             // if mouse outside of the OpenGL window - ignore the motion
-            xpos = abs(xpos - screen_width / 2.0) < 2.0 ? screen_width / 2.0 : xpos;
-            ypos = abs(ypos - screen_height / 2.0) < 2.0 ? screen_height / 2.0 : ypos;
-            // Reset mouse m_position for next frame
-            glfwSetCursorPos(window, screen_width / 2.0, screen_height / 2.0);
+            xpos = abs(xpos - screen_width_ / 2.0) < 2.0 ? screen_width_ / 2.0 : xpos;
+            ypos = abs(ypos - screen_height_ / 2.0) < 2.0 ? screen_height_ / 2.0 : ypos;
+            // Reset mouse position for next frame
+            glfwSetCursorPos(window, screen_width_ / 2.0, screen_height_ / 2.0);
 
-            const float horizontal = m_rotationSpeed * (screen_width / 2.f - float(xpos));
-            const float vertical = m_rotationSpeed * (screen_height / 2.f - float(ypos));
+            const float horizontal = rotation_factor_ * (screen_width_ / 2.f - float(xpos));
+            const float vertical = rotation_factor_ * (screen_height_ / 2.f - float(ypos));
 
-            Eigen::AngleAxisf rollAngle(horizontal, Eigen::Vector3f::UnitY());
+            Eigen::AngleAxisf rollAngle(-horizontal, Eigen::Vector3f::UnitY());
             Eigen::AngleAxisf pitchAngle(-vertical, Eigen::Vector3f::UnitX());
 
             m_pose.prerotate(rollAngle);
@@ -269,45 +390,45 @@ class VisualizationNode : public rclcpp::Node
         }
 
         float x = 0, y = 0, z = 0;
-        // Move backward
+        // Move forward
         if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(window, 'W') == GLFW_PRESS)
         {
-            x = deltaTime * m_travelSpeed;
+            z = delta_time * travel_factor_;
         }
         // Move backward
         if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(window, 'S') == GLFW_PRESS)
         {
-            x = -deltaTime * m_travelSpeed;
+            z = -delta_time * travel_factor_;
         }
         // Strafe right
         if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(window, 'D') == GLFW_PRESS)
         {
-            y = deltaTime * m_travelSpeed;
+            x = -delta_time * travel_factor_;
         }
         // Strafe left
         if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(window, 'A') == GLFW_PRESS)
         {
-            y = -deltaTime * m_travelSpeed;
+            x = delta_time * travel_factor_;
         }
 
         // Move UP
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS ||
             glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS)
         {
-            z = deltaTime * m_travelSpeed;
+            y = -delta_time * travel_factor_;
         }
 
         // Move Down
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
             glfwGetMouseButton(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS)
         {
-            z = -deltaTime * m_travelSpeed;
+            y = delta_time * travel_factor_;
         }
 
-        m_pose.pretranslate(Eigen::Vector3f({-y, z, -x}));
+        m_pose.pretranslate(Eigen::Vector3f({x, y, z}));
 
         // For the next frame, the "last time" will be "now"
-        m_lastTime = currentTime;
+        last_time_ = current_time;
     }
 
     static void checkGLError(const std::string msg)
@@ -323,7 +444,7 @@ class VisualizationNode : public rclcpp::Node
         }
     }
 
-    static GLFWwindow* openWindow(const int width,
+    static GLFWwindow* OpenGLWindow(const int width,
                                   const int height,
                                   const int swapInterval = 0,
                                   std::string name = std::string("Slam App"))
@@ -358,7 +479,7 @@ class VisualizationNode : public rclcpp::Node
         return window;
     }
 
-    static GLuint compileShader(const std::string& shaderCode, const GLuint shaderType)
+    static GLuint CompileShader(const std::string& shaderCode, const GLuint shaderType)
     {
         GLuint shaderID = glCreateShader(shaderType);
         GLint result = GL_FALSE;
@@ -377,60 +498,59 @@ class VisualizationNode : public rclcpp::Node
             std::cout << shaderCode;
             std::vector<char> shaderErrorMessage(logLength + 1);
             glGetShaderInfoLog(shaderID, logLength, nullptr, &shaderErrorMessage[0]);
-
             throw std::runtime_error(&shaderErrorMessage[0]);
         }
 
         return shaderID;
     }
 
-    static GLuint compileProgram(const GLuint vertexShaderID,
+    static GLuint CompileProgram(const GLuint vertexShaderID,
                                  const GLuint fragmentShaderID,
                                  const GLuint geometryShaderID = 0)
     {
         // Link the program
-        GLuint ProgramID = glCreateProgram();
+        GLuint programID = glCreateProgram();
         GLint result = GL_FALSE;
         int logLength;
 
-        std::cout << "Linking the program " << ProgramID;
-        glAttachShader(ProgramID, vertexShaderID);
-        glAttachShader(ProgramID, fragmentShaderID);
+        std::cout << "Linking the program " << programID;
+        glAttachShader(programID, vertexShaderID);
+        glAttachShader(programID, fragmentShaderID);
         if (geometryShaderID > 0)
         {
-            glAttachShader(ProgramID, geometryShaderID);
+            glAttachShader(programID, geometryShaderID);
         }
-        glLinkProgram(ProgramID);
+        glLinkProgram(programID);
 
         // Check the program
-        glGetProgramiv(ProgramID, GL_LINK_STATUS, &result);
-        glGetProgramiv(ProgramID, GL_INFO_LOG_LENGTH, &logLength);
+        glGetProgramiv(programID, GL_LINK_STATUS, &result);
+        glGetProgramiv(programID, GL_INFO_LOG_LENGTH, &logLength);
         if (!result)
         {
             std::vector<char> errorMessage(logLength + 1);
-            glGetProgramInfoLog(ProgramID, logLength, nullptr, &errorMessage[0]);
+            glGetProgramInfoLog(programID, logLength, nullptr, &errorMessage[0]);
             throw std::runtime_error(&errorMessage[0]);
         }
-        return ProgramID;
+        return programID;
     }
 
-    static GLuint loadProgramFromCode(const std::string& vertexCode,
+    static GLuint LoadProgramFromCode(const std::string& vertexCode,
                                       const std::string& fragmentCode,
                                       const std::string geometryCode = std::string(""))
     {
         // Compile the shaders
         std::cout << "Compiling Vertex Shader";
-        GLuint vertexShaderID = compileShader(vertexCode, GL_VERTEX_SHADER);
+        GLuint vertexShaderID = CompileShader(vertexCode, GL_VERTEX_SHADER);
         std::cout << "Compiling Fragment Shader";
-        GLuint fragmentShaderID = compileShader(fragmentCode, GL_FRAGMENT_SHADER);
+        GLuint fragmentShaderID = CompileShader(fragmentCode, GL_FRAGMENT_SHADER);
         GLuint geometryShaderID = 0;
         if (!geometryCode.empty())
         {
             std::cout << "Compiling Geometry Shader";
-            geometryShaderID = compileShader(geometryCode, GL_GEOMETRY_SHADER);
+            geometryShaderID = CompileShader(geometryCode, GL_GEOMETRY_SHADER);
         }
 
-        GLuint ProgramID = compileProgram(vertexShaderID, fragmentShaderID, geometryShaderID);
+        GLuint programID = CompileProgram(vertexShaderID, fragmentShaderID, geometryShaderID);
 
         glDeleteShader(vertexShaderID);
         glDeleteShader(fragmentShaderID);
@@ -438,7 +558,7 @@ class VisualizationNode : public rclcpp::Node
         {
             glDeleteShader(geometryShaderID);
         }
-        return ProgramID;
+        return programID;
     }
 };
 
