@@ -5,6 +5,8 @@
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+
 namespace lidar_slam
 {
 
@@ -12,6 +14,8 @@ class RosHelpers
 {
   public:
     using TransformStamped = geometry_msgs::msg::TransformStamped;
+    using OdometryMsg = nav_msgs::msg::Odometry;
+
     static constexpr std::uint64_t NanoFactor = 1000000000UL;
 
     static TransformStamped Convert(const Eigen::Isometry3d& transform, const std::uint64_t stamp)
@@ -32,6 +36,20 @@ class RosHelpers
         msg.header.stamp.nanosec = stamp % NanoFactor;
 
         return msg;
+    }
+
+    static OdometryMsg Convert2Odometry(const TransformStamped& msg)
+    {
+        OdometryMsg omsg;
+        omsg.header.frame_id = msg.header.frame_id;
+        omsg.child_frame_id = msg.child_frame_id;
+        omsg.header.stamp = msg.header.stamp;
+        const auto t = msg.transform.translation;
+        omsg.pose.pose.position.x = t.x;
+        omsg.pose.pose.position.y = t.y;
+        omsg.pose.pose.position.z = t.z;
+        omsg.pose.pose.orientation = msg.transform.rotation;
+        return omsg;
     }
 
     static Eigen::Isometry3d Convert(const TransformStamped& msg)

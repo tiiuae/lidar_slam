@@ -53,6 +53,7 @@ class LidarSlamNode : public rclcpp::Node
     rclcpp::Subscription<PointCloudMsg>::SharedPtr cloud_subscriber_;
     rclcpp::Subscription<GpsMsg>::SharedPtr gps_subscriber_;
     rclcpp::Publisher<OdometryMsg>::SharedPtr odometry_publisher_;
+    rclcpp::Publisher<OdometryMsg>::SharedPtr mapping_publisher_;
 
     rclcpp::Clock clock_;
     tf2_ros::Buffer tf_buffer_;

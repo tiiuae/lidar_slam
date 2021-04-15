@@ -2,7 +2,7 @@
 #include <lidar_slam/ros_helpers.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp/rclcpp.hpp>
-//#include <tf2/convert.h>
+
 
 using namespace lidar_slam;
 
@@ -35,8 +35,6 @@ LidarSlamNode::LidarSlamNode()
 
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-    RCLCPP_INFO(get_logger(), "LidarSlamNode cloud_topic = " + cloud_topic);
-
     rclcpp::QoS qos(5);
     qos = qos.best_effort();
     cloud_subscriber_ = create_subscription<PointCloudMsg>(
@@ -46,6 +44,7 @@ LidarSlamNode::LidarSlamNode()
         create_subscription<GpsMsg>(gps_topic, qos, std::bind(&LidarSlamNode::GrabGpsMsg, this, std::placeholders::_1));
 
     odometry_publisher_ = create_publisher<OdometryMsg>("/odom", qos);
+    mapping_publisher_ = create_publisher<OdometryMsg>("/map", qos);
 
     slam_.SetOdometryCallback(
         [this](const Eigen::Isometry3d t, const std::uint64_t s) { this->PublishOdometry(t, s); });
@@ -71,23 +70,11 @@ void LidarSlamNode::PublishOdometry(const Eigen::Isometry3d sensor_odometry, con
     msg.header.frame_id = odom_frame_;
     msg.child_frame_id = base_frame_;
     tf_broadcaster_->sendTransform(msg);
-
-    OdometryMsg omsg;
-    omsg.header.frame_id = odom_frame_;
-    omsg.header.stamp.sec = stamp / RosHelpers::NanoFactor;
-    omsg.header.stamp.nanosec = stamp % RosHelpers::NanoFactor;
-    omsg.child_frame_id = base_frame_;
-
-    // because the input transform gives us a pose of the odom frame from the latest frame point of view,
-    // we need to intern the transform to obtain "direct odometry"
-    const auto t = msg.transform.translation;
-    omsg.pose.pose.position.x = t.x;
-    omsg.pose.pose.position.y = t.y;
-    omsg.pose.pose.position.z = t.z;
-    omsg.pose.pose.orientation = msg.transform.rotation;
+    OdometryMsg omsg = RosHelpers::Convert2Odometry(msg);
     odometry_publisher_->publish(omsg);
 
     const auto r = msg.transform.rotation;
+    const auto t = msg.transform.translation;
     RCLCPP_INFO(
         get_logger(),
         "Odometry translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," + std::to_string(t.z) + "]");
@@ -102,6 +89,10 @@ void LidarSlamNode::PublishMap(const Eigen::Isometry3d transform, const std::uin
     msg.header.frame_id = map_frame_;
     msg.child_frame_id = odom_frame_;
     tf_broadcaster_->sendTransform(msg);
+
+    OdometryMsg omsg = RosHelpers::Convert2Odometry(msg);
+    mapping_publisher_->publish(omsg);
+
 
     const auto r = msg.transform.rotation;
     const auto t = msg.transform.translation;
@@ -120,7 +111,6 @@ void LidarSlamNode::GrabPointCloud(const PointCloudMsg::SharedPtr msg)
     const std::int32_t sec = msg->header.stamp.sec;
     const std::uint32_t nanosec = msg->header.stamp.nanosec;
     cloud->header.stamp = std::uint64_t(sec) * RosHelpers::NanoFactor + std::uint64_t(nanosec);
-    // RCLCPP_INFO(get_logger(), "Recieved cloud at time " + std::to_string(sec) + "." + std::to_string(nanosec));
     slam_.AddPointCloud(cloud);
 }
 
