@@ -76,14 +76,17 @@ if (BUILD_TESTING)
 
     add_executable(lidar_slam_test test/lidar_slam_test.cpp)
     add_executable(g2o_test test/g2o_test.cpp)
+    add_executable(kalman_filter_test test/kalman_filter_test.cpp)
 
     ament_target_dependencies(lidar_slam_test rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
 
     target_link_libraries(lidar_slam_test lidar_slam gtest gtest_main pthread)
     target_link_libraries(g2o_test g2o::core g2o::types_icp g2o::types_sba g2o::solver_cholmod gtest gtest_main pthread OpenMP::OpenMP_CXX)
+    target_link_libraries(kalman_filter_test gtest gtest_main pthread)
 
     add_test(NAME lidar_slam_test COMMAND lidar_slam_test)
     add_test(NAME g2o_test COMMAND g2o_test)
+    add_test(NAME kalman_filter_test COMMAND kalman_filter_test)
 
     # the following line skips the linter which checks for copyrights
     # uncomment the line when a copyright and license is not present in all source files
