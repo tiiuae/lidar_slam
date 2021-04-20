@@ -76,7 +76,7 @@ if (BUILD_TESTING)
 
     add_executable(lidar_slam_test test/lidar_slam_test.cpp)
     add_executable(g2o_test test/g2o_test.cpp)
-    add_executable(kalman_filter_test test/kalman_filter_test.cpp)
+    add_executable(kalman_filter_test test/kalman_filter_test.cpp src/kalman_filter.cpp)
 
     ament_target_dependencies(lidar_slam_test rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
 
