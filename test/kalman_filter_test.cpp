@@ -133,3 +133,15 @@ TEST_F(KalmanFilterTest, BasicConvergenceTest)
     EXPECT_NEAR(qy/qw, 0.5F, 1e-5F);
     EXPECT_NEAR(qz/qw, 0.25F, 1e-5F);
 }
+
+TEST_F(KalmanFilterTest, IncrementalUpdateTest)
+{
+    Isometry3f observation = Isometry3f::Identity();
+    observation.translate(Vector3f(1, 2, 3));
+    Quaternion<float> true_rotation(1.F, 0.5F, 0.6F, 0.7F);
+    true_rotation.normalize();
+    observation.rotate(true_rotation);
+
+    filter_.IncrementalUpdate()
+}
+

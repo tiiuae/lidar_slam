@@ -82,6 +82,29 @@ class KalmanFilter
                 const float translation_noise = 0.01,
                 const float angular_noise = 0.001);
 
+    /// Kalman update, using incremental
+    void IncrementalUpdate(const Eigen::Isometry3f& current2new_transform,
+                        const float timestamp,
+                        const float translation_noise = 0.01,
+                        const float angular_noise = 0.001)
+    {
+        if(timestamp > timestamp_)
+        {
+            const Eigen::Isometry3f current = Pose();
+            const Eigen::Isometry3f new_pose = current2new_transform * current;
+            AbsoluteUpdate(new_pose, timestamp, translation_noise, angular_noise);
+        }
+    }
+
+    Eigen::Isometry3f Pose()
+    {
+        Eigen::Isometry3f pose = Eigen::Isometry3f::Identity();
+        Eigen::Quaternionf q(state_.Quaternion[3], state_.Quaternion[0], state_.Quaternion[1], state_.Quaternion[2]);
+        q.normalize();
+        pose.rotate(q);
+        pose.pretranslate(state_.Position);
+        return pose;
+    }
 
     float timestamp()
     {
