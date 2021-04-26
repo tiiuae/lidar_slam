@@ -11,7 +11,7 @@
 namespace lidar_slam
 {
 
-/// "Generic" 6DoF Kalman Filter
+/// "Generic" Kalman Filter
 class KalmanFilter
 {
   public:
@@ -23,7 +23,6 @@ class KalmanFilter
     /// dAx, dAy, dAz (aka AngularVelocity)
     /// Qx, Qy, Qz, Qw (Quaternion or Pose)
     using StateVector = Eigen::Matrix<float, StateSize, 1>;
-    using Covariance = StateMatrix;
 
     struct State
     {
@@ -84,17 +83,17 @@ class KalmanFilter
 
     /// Kalman update, using incremental
     void IncrementalUpdate(const Eigen::Isometry3f& current2new_transform,
-                        const float timestamp,
-                        const float translation_noise = 0.01,
-                        const float angular_noise = 0.001)
-    {
-        if(timestamp > timestamp_)
-        {
-            const Eigen::Isometry3f current = Pose();
-            const Eigen::Isometry3f new_pose = current2new_transform * current;
-            AbsoluteUpdate(new_pose, timestamp, translation_noise, angular_noise);
-        }
-    }
+                           const float time_delta,
+                           const float translation_noise = 0.01,
+                           const float angular_noise = 0.001);
+//    {
+//        if(timestamp > timestamp_)
+//        {
+//            const Eigen::Isometry3f current = Pose();
+//            const Eigen::Isometry3f new_pose = current2new_transform * current;
+//            AbsoluteUpdate(new_pose, timestamp, translation_noise, angular_noise);
+//        }
+//    }
 
     Eigen::Isometry3f Pose()
     {
@@ -106,7 +105,14 @@ class KalmanFilter
         return pose;
     }
 
-    float timestamp()
+    Eigen::Matrix3f Rotation()
+    {
+        Eigen::Quaternionf q(state_.Quaternion[3], state_.Quaternion[0], state_.Quaternion[1], state_.Quaternion[2]);
+        q.normalize();
+        return q.toRotationMatrix();
+    }
+
+    float Timestamp()
     {
         return timestamp_;
     }
@@ -133,7 +139,7 @@ class KalmanFilter
     const static KalmanFilter::StateVector DefaultPredictionProcessNoise;
 
 
-  private:
+  protected:
 
     /// Quaternion Derivative Multiplication Matrix, where Q is in form [Qx, Qy, Qz, Qw]
     /// dQ/dt = 1/2 * Xi(Q) * W (AngularVelocity, which is pure quaternion) * dt
@@ -165,11 +171,8 @@ class KalmanFilter
     StateMatrix prediction_noise_;
     float timestamp_{};
 
-    Eigen::Matrix<float, 7, StateSize> AbsoluteObservationModel;
+    Eigen::Matrix<float, 7, StateSize> ObservationModel;
 };
-
-
-
 
 }  // namespace lidar_slam
 

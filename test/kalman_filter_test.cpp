@@ -90,7 +90,7 @@ TEST_F(KalmanFilterTest, BasicRotationTest)
     const float wx2 = filter_.state().AngularVelocity[0];
 
     // Since velocities are positive, we shall witness increase in x and ax
-    EXPECT_TRUE(1.F > x2 && x2 > x) << "x=" << x << ", x2=" << x2;
+    EXPECT_TRUE(2.F > x2 && x2 > x) << "x=" << x << ", x2=" << x2;
     EXPECT_TRUE(dx2 == dx) << "dx=" << dx << ", dx2=" << dx2;
     EXPECT_TRUE(1.F > ax2 && ax2 > qx) << "ax=" << qx << ", ax2=" << x2;
     EXPECT_TRUE(wx2 == wx) << "wx=" << wx << ", wx2=" << x2;
@@ -105,11 +105,11 @@ TEST_F(KalmanFilterTest, BasicConvergenceTest)
     true_rotation.normalize();
     observation.rotate(true_rotation);
 
-    for(int i = 0; i < 8; i++)
+    for(int i = 0; i < 10; i++)
     {
         filter_.AbsoluteUpdate(observation, i + 2.F, 0.001);
     }
-    std::cout << "Resulting State: " << filter_.state().AllValues.transpose() << std::endl;
+    //std::cout << "Resulting State: " << filter_.state().AllValues.transpose() << std::endl;
 
     EXPECT_NEAR(1.F, filter_.state().Position[0], 1e-5F);
     EXPECT_NEAR(2.F, filter_.state().Position[1], 1e-5F);
@@ -134,14 +134,61 @@ TEST_F(KalmanFilterTest, BasicConvergenceTest)
     EXPECT_NEAR(qz/qw, 0.25F, 1e-5F);
 }
 
-TEST_F(KalmanFilterTest, IncrementalUpdateTest)
+TEST_F(KalmanFilterTest, VelocityEstimationTest)
 {
-    Isometry3f observation = Isometry3f::Identity();
-    observation.translate(Vector3f(1, 2, 3));
-    Quaternion<float> true_rotation(1.F, 0.5F, 0.6F, 0.7F);
-    true_rotation.normalize();
-    observation.rotate(true_rotation);
+    const Vector3f true_translation(1.F, 0.5F, 0.F);
+    Isometry3f accumulated_pose = Isometry3f::Identity();
 
-    filter_.IncrementalUpdate()
+    // Initial speed is unknown
+    KalmanFilter::StateVector InitialVariance = 0.01F * KalmanFilter::StateVector::Ones();
+    InitialVariance[3] = 1.F;
+    InitialVariance[4] = 1.F;
+    InitialVariance[5] = 1.F;
+
+    filter_.Reset(KalmanFilter::OriginInitialState,
+                  InitialVariance,
+                  KalmanFilter::DefaultPredictionProcessNoise,
+                  1.F);
+
+    for(int i = 0; i < 20; i++)
+    {
+        accumulated_pose.translate(true_translation);
+        filter_.Predict(i + 2.F);
+        std::cout << "Predict State: " << filter_.state().AllValues.transpose() << std::endl;
+        filter_.AbsoluteUpdate(accumulated_pose, i + 2.F, 0.01F);
+        std::cout << "Update State: " << filter_.state().AllValues.transpose() << std::endl;
+        //std::cout << "Real Pose: " << accumulated_pose.translation().transpose() << std::endl;
+    }
+    //std::cout << "Final Resulting State: " << filter_.state().AllValues.transpose() << std::endl;
+    //std::cout << "Final Resulting Covariance: " << std::endl << filter_.covariance() << std::endl;
+
+
 }
+//
+//
+//TEST_F(KalmanFilterTest, IncrementalUpdateTest)
+//{
+//    //Isometry3f observation = Isometry3f::Identity();
+//    //observation.translate(Vector3f(1.F, 0.5F, 0.F));
+//    const Vector3f true_translation(1.F, 0.5F, 0.F);
+//    Quaternion<float> true_rotation(0.9F, 0.F, 0.F, 0.1F);
+//    true_rotation.normalize();
+//    //observation.rotate(true_rotation);
+//    Isometry3f accumulated_pose = Isometry3f::Identity();
+//
+//    for(int i = 0; i < 10; i++)
+//    {
+//        accumulated_pose.prerotate(true_rotation);
+//        accumulated_pose.translate(true_translation);
+//        //accumulated_pose = accumulated_pose * observation;
+//
+//        filter_.AbsoluteUpdate(accumulated_pose, i + 2.F, 0.001);
+//        std::cout << "State: " << filter_.state().AllValues.transpose() << std::endl;
+//        std::cout << "Pose: " << accumulated_pose.translation().transpose() << ", ";
+//        std::cout << Eigen::Quaternionf(accumulated_pose.rotation()).coeffs().transpose() << std::endl;
+//    }
+//    //std::cout << "Resulting State: " << filter_.state().AllValues.transpose() << std::endl;
+//
+//
+//}
 

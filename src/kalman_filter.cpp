@@ -14,7 +14,7 @@ const KalmanFilter::StateVector KalmanFilter::OriginInitialState = KalmanFilter:
 /// Zero Initial Variance => No doubt in the initial State
 const KalmanFilter::StateVector KalmanFilter::NoInitialVariance = KalmanFilter::StateVector::Zero();
 /// A little bit uncertain about initial State
-const KalmanFilter::StateVector KalmanFilter::SmallInitialVariance = 0.001F * KalmanFilter::StateVector::Ones();
+const KalmanFilter::StateVector KalmanFilter::SmallInitialVariance = 0.01F * KalmanFilter::StateVector::Ones();
 
 /// Unknown Orientation =>
 const static float UnknownOrientationArray[KalmanFilter::StateSize] =
@@ -37,14 +37,14 @@ KalmanFilter::KalmanFilter(const StateVector& initial_state,
 {
     state_.AllValues = initial_state;
 
-    AbsoluteObservationModel = Eigen::Matrix<float, 7, StateSize>::Zero();
-    AbsoluteObservationModel(0, 0) = 1;
-    AbsoluteObservationModel(1, 1) = 1;
-    AbsoluteObservationModel(2, 2) = 1;
-    AbsoluteObservationModel(3, 9) = 1;
-    AbsoluteObservationModel(4, 10) = 1;
-    AbsoluteObservationModel(5, 11) = 1;
-    AbsoluteObservationModel(6, 12) = 1;
+    ObservationModel = Eigen::Matrix<float, 7, StateSize>::Zero();
+    ObservationModel(0, 0) = 1;
+    ObservationModel(1, 1) = 1;
+    ObservationModel(2, 2) = 1;
+    ObservationModel(3, 9) = 1;
+    ObservationModel(4, 10) = 1;
+    ObservationModel(5, 11) = 1;
+    ObservationModel(6, 12) = 1;
 }
 
 void KalmanFilter::Reset(const StateVector& initial_state,
@@ -140,50 +140,50 @@ void KalmanFilter::AbsoluteUpdate(const Eigen::Isometry3f& pose,
     Eigen::Matrix<float, 7, 1> Noise{};
     Noise << translation_noise, translation_noise, translation_noise, angular_noise, angular_noise, angular_noise, angular_noise;
 
-    Update<7>(Observation, AbsoluteObservationModel, Noise, timestamp);
+    Update<7>(Observation, ObservationModel, Noise, timestamp);
 }
 
 
+/// 6Dof Incremental update (Change from last Pose is provided)
+void KalmanFilter::IncrementalUpdate(const Eigen::Isometry3f& pose_change,
+                                     const float time_delta,
+                                     const float translation_noise,
+                                     const float angular_noise)
+{
+        Eigen::Vector3f Velocity = pose_change.translation() / time_delta;
 
-///// 6Dof Incremental update (Change from last Pose is provided)
-//void KalmanFilter::IncrementalUpdate(const Eigen::Isometry3f& pose_change,
-//                                     const float timestamp,
-//                                     const float translation_noise,
-//                                     const float angular_noise)
-//{
-    //    Eigen::Vector3f Position = pose_change.translation();
-    //    Eigen::Quaternionf q(pose_change.rotation());
-    //
-    //    std::cout << "Current Position: [" << state_.Position.transpose() << "] ";
-    //    std::cout << "Quaternion: [" << state_.Pose.transpose() << "]" << std::endl;
-    //
-    //    std::cout << "Update Position: [" << Position.transpose() << "] ";
-    //    std::cout << "Quaternion: [" << q.w() << "," << q.x() << "," << q.y() << "," << q.z() << "]" << std::endl;
-    //
-    //    // Idea here is to prepare unnormalized quaternion, whose weight is the same as weight in the state quaternion
-    //    // It makes both (non-unit) quaternions "compatible" to each other,
-    //    // thus we can claim that we observe only angular components of quaternion
-    //    // Such modification significantly changes property of noise, hopefully not dramatically
-    //    const float qw = state_.Pose[0] / q.w();
-    //    Eigen::Vector3f Pose(q.x() * qw, q.y() * qw, q.z() * qw);
-    //
-    //    std::cout << "Re-weighted quaternion: [" << q.w() * qw << "," << Pose.transpose() << "] (factor=" << qw << ")"
-    //              << std::endl;
-    //
-    //    Eigen::Matrix<float, 6, 1> Observation{};
-    //    Observation << Position, Pose;
-    //
-    //    std::cout << "Observation: " << Observation.transpose() << std::endl;
-    //
-    //    // std::cout << "ObservationModel: " << std::endl << ObservationModel << std::endl;
-    //
-    //    Eigen::Matrix<float, 6, 1> Noise{};
-    //    Noise << translation_noise, translation_noise, translation_noise, angular_noise, angular_noise, angular_noise;
-    //
-    //    Update<6>(Observation, ObservationModel_6DoF, Noise, timestamp);
-    //
-    //    std::cout << "Resulting Position: [" << state_.Position.transpose() << "] ";
-    //    std::cout << "Quaternion: [" << state_.Pose.transpose() << "]" << std::endl;
-//}
+        //Eigen::Quaternionf q(pose_change.rotation());
+
+//        std::cout << "Current Position: [" << state_.Position.transpose() << "] ";
+//        std::cout << "Quaternion: [" << state_.Pose.transpose() << "]" << std::endl;
+//
+//        std::cout << "Update Position: [" << Position.transpose() << "] ";
+//        std::cout << "Quaternion: [" << q.w() << "," << q.x() << "," << q.y() << "," << q.z() << "]" << std::endl;
+
+        // Idea here is to prepare unnormalized quaternion, whose weight is the same as weight in the state quaternion
+        // It makes both (non-unit) quaternions "compatible" to each other,
+        // thus we can claim that we observe only angular components of quaternion
+        // Such modification significantly changes property of noise, hopefully not dramatically
+//        const float qw = state_.Pose[0] / q.w();
+//        Eigen::Vector3f Pose(q.x() * qw, q.y() * qw, q.z() * qw);
+//
+//        std::cout << "Re-weighted quaternion: [" << q.w() * qw << "," << Pose.transpose() << "] (factor=" << qw << ")"
+//                  << std::endl;
+//
+//        Eigen::Matrix<float, 6, 1> Observation{};
+//        Observation << Position, Pose;
+//
+//        std::cout << "Observation: " << Observation.transpose() << std::endl;
+//
+//        // std::cout << "ObservationModel: " << std::endl << ObservationModel << std::endl;
+//
+//        Eigen::Matrix<float, 6, 1> Noise{};
+//        Noise << translation_noise, translation_noise, translation_noise, angular_noise, angular_noise, angular_noise;
+//
+//        Update<6>(Observation, ObservationModel_6DoF, Noise, timestamp);
+//
+//        std::cout << "Resulting Position: [" << state_.Position.transpose() << "] ";
+//        std::cout << "Quaternion: [" << state_.Pose.transpose() << "]" << std::endl;
+}
 
 }  // namespace lidar_slam
