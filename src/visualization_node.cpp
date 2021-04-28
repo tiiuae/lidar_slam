@@ -15,6 +15,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <px4_msgs/msg/vehicle_odometry.hpp>
 
 std::string main_vertex =
     "#version 120\n\r"
@@ -49,6 +50,7 @@ class VisualizationNode : public rclcpp::Node
     using TransformStamped = geometry_msgs::msg::TransformStamped;
     using Point = pcl::PointXYZRGB;
     using PointCloud = pcl::PointCloud<Point>;
+    using VehicleOdometry = px4_msgs::msg::VehicleOdometry;
 
     VisualizationNode()
         : Node("visualization_node"),
@@ -90,6 +92,9 @@ class VisualizationNode : public rclcpp::Node
         mapping_subscriber_ = create_subscription<OdometryMsg>(
             std::string("/map"), qos, std::bind(&VisualizationNode::GrabMapping, this, std::placeholders::_1));
 
+        px4_odometry_subscriber_ = create_subscription<VehicleOdometry>(
+            std::string("/default/VehicleLocalPosition_PubSubTopic"), qos, std::bind(&VisualizationNode::GrabPx4Odometry, this, std::placeholders::_1));
+
         opengl_thread_running_ = true;
         opengl_thread_ = std::thread(&VisualizationNode::OpenGlThread, this);
 
@@ -113,6 +118,7 @@ class VisualizationNode : public rclcpp::Node
     rclcpp::Subscription<PointCloudMsg>::SharedPtr cloud_subscriber_;
     rclcpp::Subscription<OdometryMsg>::SharedPtr odometry_subscriber_;
     rclcpp::Subscription<OdometryMsg>::SharedPtr mapping_subscriber_;
+    rclcpp::Subscription<VehicleOdometry>::SharedPtr px4_odometry_subscriber_;
     std::string base_frame_, map_frame_, odom_frame_, sensor_frame_;
     rclcpp::Clock clock_;
     tf2_ros::Buffer tf_buffer_;
@@ -127,6 +133,10 @@ class VisualizationNode : public rclcpp::Node
 
     OdometryMsg::SharedPtr latest_mapping_;
     std::mutex latest_mapping_mutex_;
+
+    VehicleOdometry::SharedPtr latest_px4_odometry_;
+    std::mutex latest_px4_odometry_mutex_;
+
 
     std::thread opengl_thread_;
     std::atomic<bool> opengl_thread_running_;
@@ -177,6 +187,18 @@ class VisualizationNode : public rclcpp::Node
         latest_mapping_ = msg;
     }
 
+    void GrabPx4Odometry(const VehicleOdometry::SharedPtr msg)
+    {
+        RCLCPP_INFO(get_logger(), "VehicleOdometry Arrived: " + std::to_string(msg->timestamp) +
+        " X=" + std::to_string(msg->x) +
+        " Y=" + std::to_string(msg->y) +
+        " Z=" + std::to_string(msg->z));
+
+        std::lock_guard<std::mutex> lock(latest_px4_odometry_mutex_);
+        latest_px4_odometry_ = msg;
+    }
+
+
     void OpenGlThread()
     {
         enum class GlBufferId : unsigned
@@ -194,7 +216,7 @@ class VisualizationNode : public rclcpp::Node
         PointCloudMsg::SharedPtr cloud{};
         OdometryMsg::SharedPtr odom{};
         OdometryMsg::SharedPtr map{};
-
+        VehicleOdometry::SharedPtr px4_odometry{};
         size_t frame_id = 0;
 
         // Camera-view matrix
@@ -273,14 +295,16 @@ class VisualizationNode : public rclcpp::Node
                 std::lock_guard<std::mutex> lock(latest_odometry_mutex_);
                 odom = latest_odometry_;
             }
-
             {
                 std::lock_guard<std::mutex> lock(latest_mapping_mutex_);
                 map = latest_mapping_;
             }
+            {
+                std::lock_guard<std::mutex> lock(latest_px4_odometry_mutex_);
+                px4_odometry = latest_px4_odometry_;
+            }
 
-            //            checkGLError((boost::format("OpenGL FRAME %d status: ") % frameId).str());
-            //            std::cout << std::endl;
+
 
             if (bool(cloud) && (cloud->width * cloud->height > 0))
             {
@@ -360,6 +384,36 @@ class VisualizationNode : public rclcpp::Node
                 glDisableVertexAttribArray(1);
                 glDisableVertexAttribArray(0);
             }
+
+            if(bool(px4_odometry))
+            {
+                Eigen::Matrix4f px4_pose = Eigen::Matrix4f::Identity();
+
+                px4_pose(0,3) = px4_odometry->x;
+                px4_pose(1,3) = px4_odometry->y;
+                px4_pose(2,3) = px4_odometry->z;
+
+                Eigen::AngleAxisf yaw_rot(px4_odometry->heading, Eigen::Vector3f::UnitZ());
+                px4_pose.block(0,0,3,3) = yaw_rot.toRotationMatrix();
+
+                px4_pose = main_pose_ * px4_pose;
+
+                glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, px4_pose.data());
+
+                glLineWidth(4);
+                glUseProgram(mainProgID);
+                glEnableVertexAttribArray(0);
+                glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordColors));
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+                glEnableVertexAttribArray(1);
+                glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+                glDrawArrays(GL_LINES, 0, 6);
+                glDisableVertexAttribArray(1);
+                glDisableVertexAttribArray(0);
+            }
+
 
             glfwSwapBuffers(window);
             glfwPollEvents();
