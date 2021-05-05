@@ -34,7 +34,6 @@ find_package(nav_msgs REQUIRED)
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(px4_msgs REQUIRED)
-
 find_package(OpenGL COMPONENTS OpenGL)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW glfw3)
@@ -53,8 +52,28 @@ endif()
 
 
 add_library(lidar_slam src/lidar_slam.cpp)
+#ament_target_dependencies(lidar_slam Eigen3)
 target_link_libraries(lidar_slam g2o::core g2o::types_icp g2o::types_sba g2o::solver_cholmod ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
-#types_slam2d types_slam3d solver_cholmod parser_library interface_library
+
+#ament_export_dependencies(ament_cmake rclcpp g2o::core g2o::types_icp g2o::types_sba g2o::solver_cholmod ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
+#ament_export_dependencies(ament_cmake rclcpp Eigen3 px4_msgs geometry_msgs sensor_msgs)
+ament_export_dependencies(PCL Eigen3)
+
+#ament_export_targets(lidar_slam)
+#ament_export_interfaces(export_lidar_slam HAS_LIBRARY_TARGET)
+ament_export_include_directories(include ${PCL_INCLUDE_DIRS})
+#ament_export_libraries(lidar_slam)
+
+install(DIRECTORY include/lidar_slam
+        DESTINATION include)
+
+install(TARGETS lidar_slam
+        EXPORT export_lidar_slam
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+        INCLUDES DESTINATION include
+        )
 
 add_executable(lidar_slam_node src/lidar_slam_node.cpp )
 ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msgs pcl_conversions)
@@ -68,6 +87,8 @@ if(GLFW_FOUND AND OPENGL_FOUND)
     target_link_libraries(visualization_node ${OPENGL_LIBRARIES} ${GLFW_STATIC_LIBRARIES} ${PCL_LIBRARIES})
     install(TARGETS visualization_node DESTINATION lib/${PROJECT_NAME} )
 endif()
+
+
 
 if (BUILD_TESTING)
     enable_testing()

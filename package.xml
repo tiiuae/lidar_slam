@@ -17,6 +17,7 @@
     <build_depend>Eigen3</build_depend>
     <build_depend>PCL</build_depend>
     <build_depend>pcl_conversions</build_depend>
+    <build_depend>px4_msgs</build_depend>
 
 
     <test_depend>ament_lint_auto</test_depend>

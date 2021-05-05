@@ -2,6 +2,7 @@
 #include <lidar_slam/lidar_slam.h>
 #include <lidar_slam/helpers.h>
 #include <random>
+#include <thread>
 
 using namespace lidar_slam;
 
