@@ -1,16 +1,16 @@
-#include <chrono>
-#include <future>
-#include <random>
-#include <thread>
 #include <Eigen/Geometry>
-#include <lidar_slam/lidar_slam.h>
-#include <g2o/core/sparse_optimizer.h>
 #include <g2o/core/block_solver.h>
 #include <g2o/core/optimization_algorithm_levenberg.h>
+#include <g2o/core/sparse_optimizer.h>
 #include <g2o/solvers/eigen/linear_solver_eigen.h>
 #include <g2o/types/slam3d/edge_se3.h>
 #include <lidar_slam/helpers.h>
+#include <lidar_slam/lidar_slam.h>
+#include <chrono>
+#include <future>
 #include <mutex>
+#include <random>
+#include <thread>
 
 // following includes come last
 #include <fast_gicp/gicp/fast_vgicp.hpp>
@@ -79,7 +79,6 @@ struct LidarSlam::Impl
     fast_gicp::FastVGICP<Point, Point> gicp2;
 
     boost::optional<Eigen::Matrix4d> AlignCloud(PointCloud::Ptr source);
-
 };
 
 LidarSlam::Impl::Impl(const LidarSlamParameters& params) : params_(params)
@@ -107,8 +106,7 @@ LidarSlam::Impl::Impl(const LidarSlamParameters& params) : params_(params)
     gicp2.setRegularizationMethod(fast_gicp::RegularizationMethod::FROBENIUS);
 }
 
-LidarSlam::LidarSlam(const LidarSlamParameters& params)
-    : impl_(new Impl(params))
+LidarSlam::LidarSlam(const LidarSlamParameters& params) : impl_(new Impl(params))
 {
 
     if (impl_->params_.automatic_start)
@@ -117,24 +115,27 @@ LidarSlam::LidarSlam(const LidarSlamParameters& params)
     }
 }
 
-
-void LidarSlam::SetOdometryCallback(CallbackType&& callback) { impl_->odometry_callback_ = callback; }
+void LidarSlam::SetOdometryCallback(CallbackType&& callback)
+{
+    impl_->odometry_callback_ = callback;
+}
 
 /// Set-up callback which publishes high-latency transform, suitable for mapping
 /// returns transform from odometry frame into mapping frame
-void LidarSlam::SetMappingCallback(CallbackType&& callback) { impl_->mapping_callback_ = callback; }
+void LidarSlam::SetMappingCallback(CallbackType&& callback)
+{
+    impl_->mapping_callback_ = callback;
+}
 
 boost::optional<Eigen::Matrix4d> LidarSlam::Impl::AlignCloud(PointCloud::Ptr source)
 {
     boost::optional<Eigen::Matrix4d> result;
-    if(params_.gicp_use_l2r_check)
+    if (params_.gicp_use_l2r_check)
     {
-
-
     }
     else
     {
-        LidarSlam::PointCloud tmp_cloud1 {};
+        LidarSlam::PointCloud tmp_cloud1{};
         gicp1.setInputSource(source);
         gicp1.align(tmp_cloud1);
         if (gicp1.hasConverged())
@@ -149,15 +150,15 @@ void LidarSlam::Impl::OdometryThread()
 {
 
     Eigen::Isometry3d accumulated_odometry = Eigen::Isometry3d::Identity();
-    PointCloudPtr previous_cloud {};
-
+    PointCloudPtr previous_cloud{};
 
     // Adding vertex to the edge (edge->setVertex(..)) changes vertex too, which is not thread-safe
     // So we cannot add last_odometry_vertex_ directly to the Graph, but rather wait for the next odometry step
     // During this time we keep "current" odometry vertex here
-    g2o::VertexSE3* last_odometry_vertex {nullptr};
+    g2o::VertexSE3* last_odometry_vertex{nullptr};
 
     SLAM_LOG << "LidarSlam::OdometryThread() is running!" << std::endl;
+
     while (odometry_thread_running_)
     {
         // swap whatever latest_cloud_ we have into local variable
@@ -185,7 +186,7 @@ void LidarSlam::Impl::OdometryThread()
             last_odometry_vertex->setMarginalized(true);
             {
                 const std::lock_guard<std::mutex> guard(clouds_mutex_);
-                clouds_[last_odometry_vertex->id()] = CloudConstPtr (previous_cloud);
+                clouds_[last_odometry_vertex->id()] = CloudConstPtr(previous_cloud);
             }
 
             if (odometry_callback_)
@@ -195,15 +196,15 @@ void LidarSlam::Impl::OdometryThread()
             continue;
         }
 
-        //gicp1.setInputSource(latest_cloud_local);
-        //gicp1.align(tmp_cloud1);
+        // gicp1.setInputSource(latest_cloud_local);
+        // gicp1.align(tmp_cloud1);
         auto result = AlignCloud(latest_cloud_local);
-        if (result.has_value())//(gicp1.hasConverged())
+        if (result.has_value())  //(gicp1.hasConverged())
         {
-            //const Eigen::Matrix4d result = gicp1.getFinalTransformation().cast<double>();
+            // const Eigen::Matrix4d result = gicp1.getFinalTransformation().cast<double>();
             const Eigen::Isometry3d isometry(result.value());
 
-            SLAM_LOG << "ICP converged" << std::endl << result << std::endl;
+            SLAM_LOG << "ICP converged" << std::endl << result.value() << std::endl;
 
             if (odometry_callback_)
             {
@@ -212,7 +213,8 @@ void LidarSlam::Impl::OdometryThread()
 
             auto shiftangle = Helpers::GetAbsoluteShiftAngle(result.value());
 
-            if (shiftangle.first > params_.new_node_min_translation || shiftangle.second > params_.new_node_after_rotation)
+            if (shiftangle.first > params_.new_node_min_translation ||
+                shiftangle.second > params_.new_node_after_rotation)
             {
                 // when translation & rotation are small, we don't add this cloud into the graph,
                 // neither change previous_cloud_ and accumulated_odometry_
@@ -228,7 +230,7 @@ void LidarSlam::Impl::OdometryThread()
 
                 {
                     const std::lock_guard<std::mutex> guard(clouds_mutex_);
-                    clouds_[vertex->id()] = CloudConstPtr (previous_cloud);
+                    clouds_[vertex->id()] = CloudConstPtr(previous_cloud);
                 }
 
                 auto edge = new g2o::EdgeSE3();
@@ -238,10 +240,9 @@ void LidarSlam::Impl::OdometryThread()
                 edge->setMeasurement(isometry);
                 edge->setInformation(icp_information_);
 
-
                 // Store these guys in order not to loose them
-                //gicp.swapSourceCovariances(last_odometry_vertex->covariances);
-                //last_odometry_vertex->kdtree = gicp.sourceKdTree();
+                // gicp.swapSourceCovariances(last_odometry_vertex->covariances);
+                // last_odometry_vertex->kdtree = gicp.sourceKdTree();
                 {
                     const std::lock_guard<std::mutex> guard(vertices_mutex_);
                     vertices_.push_back(last_odometry_vertex);
@@ -297,15 +298,15 @@ void LidarSlam::Impl::MappingThread()
     struct VertexInfo
     {
         int id;
-        g2o::VertexSE3* vertex {nullptr};
+        g2o::VertexSE3* vertex{nullptr};
         Eigen::Isometry3d odometry{};
         CloudConstPtr cloud;
         // avoids sending same-frame mapping several times
-        std::atomic<bool> mapping_already_published {false};
+        std::atomic<bool> mapping_already_published{false};
     };
 
     VertexInfo last_mapping_vertex{};
-    std::atomic<int> latest_loop_closure_vertex_id {};
+    std::atomic<int> latest_loop_closure_vertex_id{};
 
     int loop_edges_amount = 0U;
 
@@ -344,20 +345,21 @@ void LidarSlam::Impl::MappingThread()
             }
         }
 
-        if(last_mapping_vertex.vertex == nullptr)
+        if (last_mapping_vertex.vertex == nullptr)
         {
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(5));
             continue;
         }
 
         // process loop-clousures
-        if(loop_clousure_future.valid())
+        if (loop_clousure_future.valid())
         {
-            if(loop_clousure_future.wait_for(span) == std::future_status::ready)
+            if (loop_clousure_future.wait_for(span) == std::future_status::ready)
             {
                 // loop-clousure result is here!
                 auto result = loop_clousure_future.get();
-                if(result.result.has_value() && result.loop_clousure_vertex0 != nullptr && result.loop_clousure_vertex1 != nullptr)
+                if (result.result.has_value() && result.loop_clousure_vertex0 != nullptr &&
+                    result.loop_clousure_vertex1 != nullptr)
                 {
                     SLAM_LOG << "Loop Closure found!" << std::endl;
                     SLAM_LOG << result.result.value().matrix() << std::endl;
@@ -370,7 +372,7 @@ void LidarSlam::Impl::MappingThread()
                     edge->setMeasurement(result.result.value());
                     edge->setInformation(icp_information_);
                     optimizer_.addEdge(edge);
-                    loop_edges_amount ++;
+                    loop_edges_amount++;
                 }
             }
         }
@@ -381,7 +383,7 @@ void LidarSlam::Impl::MappingThread()
             const bool not_too_many_loop_closures = loop_edges_amount * params_.loop_closure_edge_rato < edge_id_;
             const bool was_not_looped_yet = last_mapping_vertex.id != latest_loop_closure_vertex_id;
 
-            if(enough_vertices && not_too_many_loop_closures && was_not_looped_yet)
+            if (enough_vertices && not_too_many_loop_closures && was_not_looped_yet)
             {
 
                 LoopClosureSearchResult future_result{};
@@ -390,58 +392,58 @@ void LidarSlam::Impl::MappingThread()
 
                 std::uniform_int_distribution<int> rand(0, last_mapping_vertex.id - 1);
                 int other_id = rand(gen);
-                while(other_id == last_mapping_vertex.id)
+                while (other_id == last_mapping_vertex.id)
                 {
                     other_id = rand(gen);
                 }
 
-                SLAM_LOG << "Trying to find Loop Closure (between Vertex# " << last_mapping_vertex.id << " and Vertex#" << other_id << ")" << std::endl;
-
+                SLAM_LOG << "Trying to find Loop Closure (between Vertex# " << last_mapping_vertex.id << " and Vertex#"
+                         << other_id << ")" << std::endl;
 
                 future_result.loop_clousure_vertex1 = (g2o::VertexSE3*)optimizer_.vertex(other_id);
 
+                loop_clousure_future = std::async([&]() {
+                    LoopClosureSearchResult result{future_result.loop_clousure_vertex0,
+                                                   future_result.loop_clousure_vertex1};
+                    LidarSlam::PointCloud tmp_cloud1{};
+                    // boost::optional<Eigen::Isometry3d> result;
 
-                loop_clousure_future = std::async([&](){
-                  LoopClosureSearchResult result{future_result.loop_clousure_vertex0, future_result.loop_clousure_vertex1};
-                  LidarSlam::PointCloud tmp_cloud1 {};
-                  //boost::optional<Eigen::Isometry3d> result;
+                    gicp.setInputTarget(last_mapping_vertex.cloud);
+                    // gicp.setInputTarget(loop_clousure_vertex0->cloud, loop_clousure_vertex0->kdtree);
+                    // gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
 
-                  gicp.setInputTarget(last_mapping_vertex.cloud);
-                  //gicp.setInputTarget(loop_clousure_vertex0->cloud, loop_clousure_vertex0->kdtree);
-                  //gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
+                    gicp.setInputSource(clouds_.at(other_id));
+                    // gicp.setInputSource(loop_clousure_vertex1->cloud, loop_clousure_vertex1->kdtree);
+                    // gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
+                    gicp.align(tmp_cloud1);
 
-                  gicp.setInputSource(clouds_.at(other_id));
-                  //gicp.setInputSource(loop_clousure_vertex1->cloud, loop_clousure_vertex1->kdtree);
-                  //gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
-                  gicp.align(tmp_cloud1);
+                    // return covariance back to corresponsing vertices
+                    // gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
+                    // gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
 
-                  // return covariance back to corresponsing vertices
-                  //gicp.swapTargetCovariances(loop_clousure_vertex0->covariances);
-                  //gicp.swapSourceCovariances(loop_clousure_vertex1->covariances);
-
-                  if (gicp.hasConverged())
-                  {
-                      const Eigen::Matrix4d transform = gicp.getFinalTransformation().cast<double>();
-                      result.result = Eigen::Isometry3d(transform);
-                  }
-                  return result;
-                  });
-
+                    if (gicp.hasConverged())
+                    {
+                        const Eigen::Matrix4d transform = gicp.getFinalTransformation().cast<double>();
+                        result.result = Eigen::Isometry3d(transform);
+                    }
+                    return result;
+                });
             }
         }
 
-        //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.initializeOptimization()" << std::endl;
+        // SLAM_LOG << "LidarSlam::MappingThread() optimizer_.initializeOptimization()" << std::endl;
         if (optimizer_.initializeOptimization())
         {
 
-            //SLAM_LOG << "LidarSlam::MappingThread() optimizer_.optimize()" << std::endl;
+            // SLAM_LOG << "LidarSlam::MappingThread() optimizer_.optimize()" << std::endl;
             if (optimizer_.optimize(5) > 0)
             {
                 if (mapping_callback_ && latest_loop_closure_vertex_id != last_mapping_vertex.id)
                 {
                     SLAM_LOG << "LidarSlam::MappingThread() sending mapping_callback_" << std::endl;
 
-                    const Eigen::Isometry3d p = last_mapping_vertex.vertex->estimate() * last_mapping_vertex.odometry.inverse();
+                    const Eigen::Isometry3d p =
+                        last_mapping_vertex.vertex->estimate() * last_mapping_vertex.odometry.inverse();
                     mapping_callback_(p, last_mapping_vertex.cloud->header.stamp);
                     latest_loop_closure_vertex_id = last_mapping_vertex.id;
                 }
@@ -452,8 +454,9 @@ void LidarSlam::Impl::MappingThread()
             std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(50));
         }
     }
+
     // make sure std::future is complete before exit
-    if(loop_clousure_future.valid())
+    if (loop_clousure_future.valid())
     {
         loop_clousure_future.get();
     }
@@ -515,7 +518,15 @@ void LidarSlam::AddPointCloud(const PointCloudPtr& msg)
     }
 }
 
-
-
+//void LidarSlam::AddPointCloudOffline(const PointCloudPtr& msg)
+//{
+//    if(!impl_->odometry_thread_running_ && !impl_->mapping_thread_running_)
+//    {
+//        AddPointCloud(msg);
+//
+//        impl_->OdometryThread(); // call odometry once (infinite loop disabled)
+//        impl_->MappingThread(); // call mapping once
+//    }
+//}
 
 }  // namespace lidar_slam
