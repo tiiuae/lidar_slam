@@ -17,6 +17,12 @@
 #include <tf2_ros/transform_listener.h>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/sample_consensus/sac_model_perpendicular_plane.h>
+#include <pcl/sample_consensus/sac_model_parallel_plane.h>
+#include <pcl/filters/extract_indices.h>
+
 std::string main_vertex =
     "#version 120\n\r"
     "attribute vec3 RGB;\n\r"
@@ -24,10 +30,11 @@ std::string main_vertex =
     "varying vec3 rgb;\n\r"
     "uniform mat4 C1;\n\r"
     "uniform mat4 K;\n\r"
+    "uniform float scale;\n\r"
     "void main()\n\r"
     "{\n\r"
     "    rgb = RGB;\n\r"
-    "    vec4 xyz1 = vec4(XYZ.x, XYZ.y, XYZ.z, 1.0);\n\r"
+    "    vec4 xyz1 = vec4(XYZ.x * scale, XYZ.y * scale, XYZ.z * scale, 1.0) ;\n\r"
     "    gl_Position = K * C1 * xyz1;\n\r"
     "    gl_PointSize = 3.0;\n\r"
     "}\n\r";
@@ -41,6 +48,7 @@ std::string main_frag =
     "}\n\r";
 
 using namespace lidar_slam;
+using namespace pcl;
 
 class VisualizationNode : public rclcpp::Node
 {
@@ -48,7 +56,7 @@ class VisualizationNode : public rclcpp::Node
     using PointCloudMsg = sensor_msgs::msg::PointCloud2;
     using OdometryMsg = nav_msgs::msg::Odometry;
     using TransformStamped = geometry_msgs::msg::TransformStamped;
-    using Point = pcl::PointXYZRGB;
+    using Point = pcl::PointXYZ;
     using PointCloud = pcl::PointCloud<Point>;
     using VehicleOdometry = px4_msgs::msg::VehicleOdometry;
 
@@ -93,7 +101,9 @@ class VisualizationNode : public rclcpp::Node
             std::string("/map"), qos, std::bind(&VisualizationNode::GrabMapping, this, std::placeholders::_1));
 
         px4_odometry_subscriber_ = create_subscription<VehicleOdometry>(
-            std::string("/default/VehicleLocalPosition_PubSubTopic"), qos, std::bind(&VisualizationNode::GrabPx4Odometry, this, std::placeholders::_1));
+            std::string("/default/VehicleLocalPosition_PubSubTopic"),
+            qos,
+            std::bind(&VisualizationNode::GrabPx4Odometry, this, std::placeholders::_1));
 
         opengl_thread_running_ = true;
         opengl_thread_ = std::thread(&VisualizationNode::OpenGlThread, this);
@@ -125,6 +135,7 @@ class VisualizationNode : public rclcpp::Node
     tf2_ros::TransformListener tf_listener_;
 
     PointCloudMsg::SharedPtr latest_cloud_;
+    boost::optional<Eigen::Matrix4f> latest_corner_;
     std::mutex latest_cloud_mutex_;
 
     OdometryMsg::SharedPtr latest_odometry_;
@@ -136,7 +147,6 @@ class VisualizationNode : public rclcpp::Node
 
     VehicleOdometry::SharedPtr latest_px4_odometry_;
     std::mutex latest_px4_odometry_mutex_;
-
 
     std::thread opengl_thread_;
     std::atomic<bool> opengl_thread_running_;
@@ -150,6 +160,10 @@ class VisualizationNode : public rclcpp::Node
 
     void GrabPointCloud(const PointCloudMsg::SharedPtr msg)
     {
+        if (bool(latest_cloud_))
+        {
+            latest_corner_ = Detect3DCorner(latest_cloud_);
+        }
         std::lock_guard<std::mutex> lock(latest_cloud_mutex_);
         latest_cloud_ = msg;
     }
@@ -162,13 +176,13 @@ class VisualizationNode : public rclcpp::Node
         odometry.prerotate(RosHelpers::Convert(msg->pose.pose.orientation));
         odometry.pretranslate(RosHelpers::Convert(msg->pose.pose.position));
 
-        if(!odometries_.empty())
+        if (!odometries_.empty())
         {
-            const Eigen::Isometry3d previous = odometries_.at(odometries_.size()-1);
-            const Eigen::Matrix4d diff = (odometry*previous.inverse()).matrix();
+            const Eigen::Isometry3d previous = odometries_.at(odometries_.size() - 1);
+            const Eigen::Matrix4d diff = (odometry * previous.inverse()).matrix();
             auto shiftangle = Helpers::GetAbsoluteShiftAngle(diff);
-            const double new_node_min_translation = 0.1; // [meters]
-            const double new_node_after_rotation = 0.05; // [radians]
+            const double new_node_min_translation = 0.1;  // [meters]
+            const double new_node_after_rotation = 0.05;  // [radians]
 
             if (shiftangle.first > new_node_min_translation || shiftangle.second > new_node_after_rotation)
             {
@@ -189,15 +203,13 @@ class VisualizationNode : public rclcpp::Node
 
     void GrabPx4Odometry(const VehicleOdometry::SharedPtr msg)
     {
-        RCLCPP_INFO(get_logger(), "VehicleOdometry Arrived: " + std::to_string(msg->timestamp) +
-        " X=" + std::to_string(msg->x) +
-        " Y=" + std::to_string(msg->y) +
-        " Z=" + std::to_string(msg->z));
+        RCLCPP_INFO(get_logger(),
+                    "VehicleOdometry Arrived: " + std::to_string(msg->timestamp) + " X=" + std::to_string(msg->x) +
+                        " Y=" + std::to_string(msg->y) + " Z=" + std::to_string(msg->z));
 
         std::lock_guard<std::mutex> lock(latest_px4_odometry_mutex_);
         latest_px4_odometry_ = msg;
     }
-
 
     void OpenGlThread()
     {
@@ -205,7 +217,7 @@ class VisualizationNode : public rclcpp::Node
         {
             Cloud,
             CoordLines,
-            ShortLines,
+            CornerLines,
             CoordColors,
             GrayColors,
             Size  // Keep that one the last
@@ -217,6 +229,7 @@ class VisualizationNode : public rclcpp::Node
         OdometryMsg::SharedPtr odom{};
         OdometryMsg::SharedPtr map{};
         VehicleOdometry::SharedPtr px4_odometry{};
+        boost::optional<Eigen::Matrix4f> corner;
         size_t frame_id = 0;
 
         // Camera-view matrix
@@ -257,6 +270,7 @@ class VisualizationNode : public rclcpp::Node
         glUseProgram(mainProgID);
         glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, main_pose_.data());
         glUniformMatrix4fv(glGetUniformLocation(mainProgID, "K"), 1, GL_FALSE, intrinsic.data());
+        glUniform1f(glGetUniformLocation(mainProgID, "scale"), 1.f);
 
         checkGLError("Setting Buffers and Textures");
 
@@ -265,16 +279,16 @@ class VisualizationNode : public rclcpp::Node
 
 #define GLBUFFID(Name) gl_buffer_ids[unsigned(GlBufferId::Name)]
 
-        const std::vector<float> coord_lines{0, 0, 0, 0.2, 0, 0, 0, 0, 0, 0, 0.2, 0, 0, 0, 0, 0, 0, 0.2};
-        const std::vector<float> short_lines{0, 0, 0, 0.1, 0, 0, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, 0, 0, 0.1};
+        const std::vector<float> coord_lines{0, 0, 0, 1., 0, 0, 0, 0, 0, 0, 1., 0, 0, 0, 0, 0, 0, 1.};
+        const std::vector<float> corner_lines{0, 0, 0, 1., 0, 0, 0, 0, 0, 0, -1., 0, 0, 0, 0, 0, 0, -1.};
         const std::vector<float> coord_colors{0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0};
         const std::vector<float> gray_colors{
             0.5, 0.5, 0.9, 0.5, 0.5, 0.9, 0.5, 0.9, 0.5, 0.5, 0.9, 0.5, 0.9, 0.5, 0.5, 0.9, 0.5, 0.5};
         std::vector<Eigen::Matrix4f> trajectory;
         glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
         glBufferData(GL_ARRAY_BUFFER, coord_lines.size() * sizeof(float), &coord_lines[0], GL_STATIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(ShortLines));
-        glBufferData(GL_ARRAY_BUFFER, short_lines.size() * sizeof(float), &short_lines[0], GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CornerLines));
+        glBufferData(GL_ARRAY_BUFFER, corner_lines.size() * sizeof(float), &corner_lines[0], GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordColors));
         glBufferData(GL_ARRAY_BUFFER, coord_colors.size() * sizeof(float), &coord_colors[0], GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(GrayColors));
@@ -288,6 +302,7 @@ class VisualizationNode : public rclcpp::Node
 
             {
                 std::lock_guard<std::mutex> lock(latest_cloud_mutex_);
+                corner = latest_corner_;
                 cloud = latest_cloud_;
             }
 
@@ -304,20 +319,17 @@ class VisualizationNode : public rclcpp::Node
                 px4_odometry = latest_px4_odometry_;
             }
 
-
-
             if (bool(cloud) && (cloud->width * cloud->height > 0))
             {
                 const std::size_t length = cloud->width * cloud->height;
                 const std::size_t stride = cloud->point_step;
                 const float* data = (float*)(&cloud->data[0]);
 
-
                 Eigen::Isometry3d mapping = Eigen::Isometry3d::Identity();
                 Eigen::Isometry3d odometry = Eigen::Isometry3d::Identity();
                 Eigen::Matrix4f pose = main_pose_.matrix();
 
-                if(bool(map))
+                if (bool(map))
                 {
                     mapping.prerotate(RosHelpers::Convert(map->pose.pose.orientation));
                     mapping.pretranslate(RosHelpers::Convert(map->pose.pose.position));
@@ -329,8 +341,9 @@ class VisualizationNode : public rclcpp::Node
                     odometry.prerotate(RosHelpers::Convert(odom->pose.pose.orientation));
                     odometry.pretranslate(RosHelpers::Convert(odom->pose.pose.position));
 
-                    pose = main_pose_ * mapping.matrix().cast<float>() * odometry.matrix().cast<float>() ;
+                    pose = main_pose_ * mapping.matrix().cast<float>() * odometry.matrix().cast<float>();
                     glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+                    glUniform1f(glGetUniformLocation(mainProgID, "scale"), 0.2f);
 
                     // draw the sensor origin
                     glLineWidth(4);
@@ -349,8 +362,10 @@ class VisualizationNode : public rclcpp::Node
                     // draw trajectory
                     for (auto odom_i : odometries_)
                     {
-                        const Eigen::Matrix4f pose_i = main_pose_ * mapping.matrix().cast<float>() * odom_i.matrix().cast<float>();
+                        const Eigen::Matrix4f pose_i =
+                            main_pose_ * mapping.matrix().cast<float>() * odom_i.matrix().cast<float>();
                         glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose_i.data());
+                        glUniform1f(glGetUniformLocation(mainProgID, "scale"), 0.1f);
 
                         // draw the sensor origin
                         glLineWidth(4);
@@ -360,7 +375,7 @@ class VisualizationNode : public rclcpp::Node
                         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
                         glEnableVertexAttribArray(1);
-                        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(ShortLines));
+                        glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
                         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
                         glDrawArrays(GL_LINES, 0, 6);
                         glDisableVertexAttribArray(1);
@@ -368,10 +383,12 @@ class VisualizationNode : public rclcpp::Node
                     }
                 }
 
-                glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+
 
                 // draw all the points
                 glUseProgram(mainProgID);
+                glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, pose.data());
+                glUniform1f(glGetUniformLocation(mainProgID, "scale"), 1.f);
                 glEnableVertexAttribArray(0);
 
                 glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(Cloud));
@@ -385,21 +402,12 @@ class VisualizationNode : public rclcpp::Node
                 glDisableVertexAttribArray(0);
             }
 
-            if(bool(px4_odometry))
+            if (corner.has_value())
             {
-                Eigen::Matrix4f px4_pose = Eigen::Matrix4f::Identity();
-
-                px4_pose(0,3) = px4_odometry->x;
-                px4_pose(1,3) = px4_odometry->y;
-                px4_pose(2,3) = px4_odometry->z;
-
-                Eigen::AngleAxisf yaw_rot(px4_odometry->heading, Eigen::Vector3f::UnitZ());
-                px4_pose.block(0,0,3,3) = yaw_rot.toRotationMatrix();
-
-                px4_pose = main_pose_ * px4_pose;
-
-                glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, px4_pose.data());
-
+                const Eigen::Matrix4f corner_pose = main_pose_ * corner.value();
+                glUniformMatrix4fv(glGetUniformLocation(mainProgID, "C1"), 1, GL_FALSE, corner_pose.data());
+                glUniform1f(glGetUniformLocation(mainProgID, "scale"), 0.2f);
+                // draw the sensor origin
                 glLineWidth(4);
                 glUseProgram(mainProgID);
                 glEnableVertexAttribArray(0);
@@ -407,7 +415,7 @@ class VisualizationNode : public rclcpp::Node
                 glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
                 glEnableVertexAttribArray(1);
-                glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CoordLines));
+                glBindBuffer(GL_ARRAY_BUFFER, GLBUFFID(CornerLines));
                 glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
                 glDrawArrays(GL_LINES, 0, 6);
                 glDisableVertexAttribArray(1);
