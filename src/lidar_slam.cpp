@@ -518,15 +518,4 @@ void LidarSlam::AddPointCloud(const PointCloudPtr& msg)
     }
 }
 
-//void LidarSlam::AddPointCloudOffline(const PointCloudPtr& msg)
-//{
-//    if(!impl_->odometry_thread_running_ && !impl_->mapping_thread_running_)
-//    {
-//        AddPointCloud(msg);
-//
-//        impl_->OdometryThread(); // call odometry once (infinite loop disabled)
-//        impl_->MappingThread(); // call mapping once
-//    }
-//}
-
 }  // namespace lidar_slam

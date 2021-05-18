@@ -58,11 +58,6 @@ class LidarSlam
     /// Each new cloud shall have later timestamp than previous
     void AddPointCloud(const PointCloudPtr& msg);
 
-//    /// SLAM may work in "Offline-Mode" if it wasn't started (automatically or by calling Start() func)
-//    /// Returns fully-optimized by SLAM pose for given point cloud
-//    // ToDo: Work In Progress - not fully ready yet
-//    void AddPointCloudOffline(const PointCloudPtr& msg);
-
 
   private:
 

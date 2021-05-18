@@ -81,9 +81,9 @@ ament_target_dependencies(lidar_slam_node rclcpp sensor_msgs tf2 tf2_ros nav_msg
 target_link_libraries(lidar_slam_node lidar_slam)
 install(TARGETS lidar_slam_node DESTINATION lib/${PROJECT_NAME} )
 
-add_executable(handeye_calibration src/handeye_calibration.cpp)
-ament_target_dependencies(handeye_calibration rclcpp rosbag2 rosbag2_cpp px4_msgs) #lidar_slam)
-target_link_libraries(handeye_calibration ${PCL_LIBRARIES})
+#add_executable(handeye_calibration src/handeye_calibration.cpp)
+#ament_target_dependencies(handeye_calibration rclcpp rosbag2 rosbag2_cpp px4_msgs) #lidar_slam)
+#target_link_libraries(handeye_calibration ${PCL_LIBRARIES})
 
 add_executable(timesync_check src/timesync_check.cpp)
 ament_target_dependencies(timesync_check rclcpp px4_msgs sensor_msgs)
