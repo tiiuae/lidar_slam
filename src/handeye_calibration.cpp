@@ -49,6 +49,13 @@ steady_clock::rep ConvertTime(std::int32_t sec, std::uint32_t nanosec)
     return cloud_stamp;
 }
 
+void print_transform(const Eigen::Isometry3d& transform)
+{
+    const auto t = transform.translation();
+    const auto q = Eigen::Quaterniond (transform.rotation()).coeffs();
+    std::cout << t[0] << "," << t[1] << "," << t[2] << "," << q[0] << "," << q[1] << "," << q[2] << ","<< q[3];
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -60,51 +67,44 @@ int main(int argc, char** argv)
     // Recovered Poses are stored in these buffers
     std::map<std::uint64_t, Eigen::Isometry3d> camera_poses{};
     std::map<std::uint64_t, Eigen::Isometry3d> px4_poses{};
-    std::atomic<bool> camera_pose_saved{false};  // need this one due-to multi-threaded nature of SLAM
+    // buffer containing matched pose pairs
+    // correspondence is found by selecting temporally-closest pairs
+    std::vector<std::pair<Eigen::Isometry3d, Eigen::Isometry3d>> correspondances{};
 
-    //    LidarSlamParameters params{};
-    //    params.automatic_start = true;
-    //    LidarSlam slam(params);
-    //    LidarSlam::CallbackType lambda = [&] (const Eigen::Isometry3d transform, const std::uint64_t stamp){
-    //      camera_poses[stamp] = transform;
-    //      camera_pose_saved = true;
-    //      std::cout << "PointCloud " << stamp << " : " << transform.translation().transpose() << std::endl;
-    //    };
-    //    slam.SetMappingCallback(std::move(lambda));
 
     readers::SequentialReader reader;
     reader.open({argv[1], "sqlite3"}, {"cdr", "cdr"});
 
+    boost::optional<Eigen::Isometry3d> latest_px4_pose;
     while (reader.has_next())
     {
         auto bag_message = reader.read_next();
-        std::cout << bag_message->topic_name << std::endl;
+        //std::cout << bag_message->topic_name << std::endl;
         if (bag_message->topic_name == "/camera/depth/color/points")
         {
             PointCloud2 cloud_msg = Convert<PointCloud2>(bag_message);
             PointCloud::Ptr cloud(new PointCloud());
             pcl::moveFromROSMsg<Point>(cloud_msg, *cloud);
-            const auto steady_stamp = ConvertTime(cloud_msg.header.stamp.sec, cloud_msg.header.stamp.nanosec);
-            const uint64_t sec = steady_stamp / 1000000000ULL;
-            const uint64_t nanosec = steady_stamp % 1000000000ULL;
-            cloud->header.stamp = steady_stamp;
-            std::cout << "PointCloud " << sec << "." << nanosec << " : " << cloud->points.size() << std::endl;
-            //            camera_pose_saved = false;
+//            const auto steady_stamp = ConvertTime(cloud_msg.header.stamp.sec, cloud_msg.header.stamp.nanosec);
+//            const uint64_t sec = steady_stamp / 1000000000ULL;
+//            const uint64_t nanosec = steady_stamp % 1000000000ULL;
+//            cloud->header.stamp = steady_stamp;
+//            std::cout << "PointCloud " << sec << "." << nanosec << " : " << cloud->points.size() << std::endl;
             auto corner = Helpers::Detect3DCorner<Point>(cloud);
             if (corner.has_value())
             {
                 Eigen::Isometry3d transform(corner.value().cast<double>());
                 // inverse of 'corner' pose gives sensor pose in "corner" coordinate system
-                camera_poses[steady_stamp] = transform.inverse();
-            }
+                //camera_poses[steady_stamp] = transform;//.inverse();
+                std::cout << transform.translation().transpose() << std::endl;
 
-            //            slam.AddPointCloud(cloud);
-            //            size_t iters = 0;
-            //            while(!camera_pose_saved && iters < 10)
-            //            {
-            //                std::this_thread::sleep_for(milliseconds(50));
-            //                iters ++;
-            //            }
+                if(latest_px4_pose.has_value())
+                {
+                    correspondances.push_back({transform, latest_px4_pose.value()});
+                    latest_px4_pose.reset();
+                }
+
+            }
         }
         if (bag_message->topic_name == "/default/VehicleOdometry_PubSubTopic")
         {
@@ -113,63 +113,64 @@ int main(int argc, char** argv)
             Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
             transform.translate(Eigen::Vector3d(odom_msg.x, odom_msg.y, odom_msg.z));
             transform.rotate(Eigen::Quaterniond(odom_msg.q[0], odom_msg.q[1], odom_msg.q[2], odom_msg.q[3]));
-            px4_poses[steady_stamp] = transform;
-
+            //px4_poses[steady_stamp] = transform;
+            latest_px4_pose = transform;
             const uint64_t sec = steady_stamp / 1000000000ULL;
             const uint64_t nanosec = steady_stamp % 1000000000ULL;
             std::cout << "VehicleOdometry " << sec << "." << nanosec << " : " << transform.translation().transpose()
                       << std::endl;
         }
     }
-
-    auto camera_iter = camera_poses.begin();
-    auto px4_iter = px4_poses.begin();
-
-    // buffer containing matched pose pairs
-    // correspondence is found by selecting temporally-closest pairs
-    std::vector<std::pair<Eigen::Isometry3d, Eigen::Isometry3d>> correspondances{};
-
-    while (camera_iter != camera_poses.end() && px4_iter != px4_poses.end())
-    {
-        auto camera_pose = camera_iter->second;
-        auto px4_pose = px4_iter->second;
-        std::int64_t current_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
-
-        if (camera_iter->first < px4_iter->first)
-        {
-            camera_iter++;
-            if (camera_iter != camera_poses.end())
-            {
-                std::int64_t next_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
-                if (std::abs(current_difference) < std::abs(next_difference))
-                {
-                    correspondances.push_back({camera_pose, px4_pose});
-                    px4_iter++;  // iterate also px4, such that each pose appear only once
-                }
-            }
-        }
-        else
-        {
-            px4_iter++;
-            if (px4_iter != px4_poses.end())
-            {
-                std::int64_t next_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
-                if (std::abs(current_difference) < std::abs(next_difference))
-                {
-                    correspondances.push_back({camera_pose, px4_pose});
-                    camera_iter++;  // iterate also camera_iter, such that each pose appear only once
-                }
-            }
-        }
-    }
+//
+//    auto camera_iter = camera_poses.begin();
+//    auto px4_iter = px4_poses.begin();
+//
+//
+//    while (camera_iter != camera_poses.end() && px4_iter != px4_poses.end())
+//    {
+//        auto camera_pose = camera_iter->second;
+//        auto px4_pose = px4_iter->second;
+//        std::int64_t current_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
+//
+//        if (camera_iter->first < px4_iter->first)
+//        {
+//            camera_iter++;
+//            if (camera_iter != camera_poses.end())
+//            {
+//                std::int64_t next_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
+//                if (std::abs(current_difference) < std::abs(next_difference))
+//                {
+//                    correspondances.push_back({camera_pose, px4_pose});
+//                    px4_iter++;  // iterate also px4, such that each pose appear only once
+//                }
+//            }
+//        }
+//        else
+//        {
+//            px4_iter++;
+//            if (px4_iter != px4_poses.end())
+//            {
+//                std::int64_t next_difference = std::int64_t(px4_iter->first) - std::int64_t(camera_iter->first);
+//                if (std::abs(current_difference) < std::abs(next_difference))
+//                {
+//                    correspondances.push_back({camera_pose, px4_pose});
+//                    camera_iter++;  // iterate also camera_iter, such that each pose appear only once
+//                }
+//            }
+//        }
+//    }
 
     std::cout << "============================================" << std::endl;
     for (auto pair : correspondances)
     {
-        std::cout << pair.first.translation().transpose() << ",";
-        std::cout << pair.first.rotation().transpose() << ",";
-        std::cout << pair.second.translation().transpose() << ",";
-        std::cout << pair.second.rotation().transpose() << ",";
+        print_transform(pair.first);
+        std::cout << ",000,";
+        print_transform(pair.second);
+        std::cout << std::endl;
+//        std::cout << pair.first.translation().transpose() << " ";
+//        std::cout << Eigen::Quaterniond (pair.first.rotation()).coeffs().transpose() << " ";
+//        std::cout << pair.second.translation().transpose() << " ";
+//        std::cout << Eigen::Quaterniond (pair.second.rotation()).coeffs().transpose() << std::endl;
     }
 
     return 0;
