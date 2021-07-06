@@ -95,6 +95,13 @@ if(GLFW_FOUND AND OPENGL_FOUND)
     ament_target_dependencies(visualization_node rclcpp sensor_msgs nav_msgs tf2_ros px4_msgs)
     target_link_libraries(visualization_node ${OPENGL_LIBRARIES} ${GLFW_STATIC_LIBRARIES} ${PCL_LIBRARIES})
     install(TARGETS visualization_node DESTINATION lib/${PROJECT_NAME} )
+
+
+    add_executable(stereo_matching_node src/stereo_matching_node.cpp src/glad.c)
+    ament_target_dependencies(stereo_matching_node rclcpp sensor_msgs nav_msgs tf2_ros px4_msgs)
+    target_link_libraries(stereo_matching_node ${OPENGL_LIBRARIES} ${GLFW_STATIC_LIBRARIES} ${PCL_LIBRARIES})
+    install(TARGETS stereo_matching_node DESTINATION lib/${PROJECT_NAME} )
+
 endif()
 
 
