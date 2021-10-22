@@ -21,7 +21,7 @@ class TimeSyncCheckNode : public rclcpp::Node
                                             qos,
                                             std::bind(&TimeSyncCheckNode::GrabPointCloud, this, std::placeholders::_1));
         odometry_subscriber_ = create_subscription<VehicleOdometry>(
-            "/default/VehicleOdometry_PubSubTopic",
+            "/default/fmu/vehicle_odometry/out",
             qos,
             std::bind(&TimeSyncCheckNode::GrabVehicleOdometry, this, std::placeholders::_1));
     }
