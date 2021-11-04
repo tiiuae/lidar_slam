@@ -96,7 +96,7 @@ class VisualizationNode : public rclcpp::Node
             std::string("/map"), qos, std::bind(&VisualizationNode::GrabMapping, this, std::placeholders::_1));
 
         px4_odometry_subscriber_ = create_subscription<VehicleOdometry>(
-            std::string("/default/VehicleLocalPosition_PubSubTopic"),
+            std::string("/default/fmu/vehicle_local_position/out"),
             qos,
             std::bind(&VisualizationNode::GrabPx4Odometry, this, std::placeholders::_1));
 

@@ -106,7 +106,7 @@ int main(int argc, char** argv)
             //                iters ++;
             //            }
         }
-        if (bag_message->topic_name == "/default/VehicleOdometry_PubSubTopic")
+        if (bag_message->topic_name == "/default/fmu/vehicle_odometry/out")
         {
             VehicleOdometry odom_msg = Convert<VehicleOdometry>(bag_message);
             const std::uint64_t steady_stamp = static_cast<std::uint64_t>(odom_msg.timestamp) * 1000ULL;
