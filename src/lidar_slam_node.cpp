@@ -77,10 +77,11 @@ void LidarSlamNode::PublishOdometry(const Eigen::Isometry3d sensor_odometry, con
     const auto t = msg.transform.translation;
     RCLCPP_INFO(
         get_logger(),
-        "Odometry translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," + std::to_string(t.z) + "]");
+        "Odometry translation: [%f, %f, %f]",
+        t.x, t.y, t.z);
     RCLCPP_INFO(get_logger(),
-                "Odometry rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.z) +
-                    "," + std::to_string(r.w) + "]");
+                "Odometry rotation: [%f, %f, %f, %f]",
+        r.x, r.y, r.z, r.w);
 }
 
 void LidarSlamNode::PublishMap(const Eigen::Isometry3d transform, const std::uint64_t stamp)
@@ -98,10 +99,11 @@ void LidarSlamNode::PublishMap(const Eigen::Isometry3d transform, const std::uin
     const auto t = msg.transform.translation;
     RCLCPP_INFO(
         get_logger(),
-        "Mapping translation: [" + std::to_string(t.x) + "," + std::to_string(t.y) + "," + std::to_string(t.z) + "]");
+        "Mapping translation: [%f, %f, %f]",
+        t.x, t.y, t.z);
     RCLCPP_INFO(get_logger(),
-                "Mapping rotation: [" + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.z) +
-                    "," + std::to_string(r.w) + "]");
+                "Mapping rotation: [%f, %f, %f, %f]",
+        r.x, r.y, r.z, r.w);
 }
 
 void LidarSlamNode::GrabPointCloud(const PointCloudMsg::SharedPtr msg)

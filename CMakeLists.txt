@@ -103,7 +103,7 @@ if (BUILD_TESTING)
     enable_testing()
 
     find_package(ament_lint_auto REQUIRED)
-    find_package(GTest CONFIG REQUIRED)
+    find_package(ament_cmake_gtest CONFIG REQUIRED)
 
     add_executable(lidar_slam_test test/lidar_slam_test.cpp)
     add_executable(g2o_test test/g2o_test.cpp)
